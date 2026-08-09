@@ -166,8 +166,8 @@ Health check endpoint.
 
 ```bash
 # Clone the repository
-git clone https://github.com/Divyanshgupta2580/EchoMind-2.git
-cd EchoMind-2
+git clone https://github.com/rishav-raj-genx/Tron.git
+cd Tron
 
 # Install dependencies
 pip install -r requirements.txt
