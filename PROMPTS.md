@@ -32,3 +32,19 @@ Tooling: Anti-Gravity / Claude 4.5 Opus / Gemini 2.0 Flash / Groq.
 ### 5. Scoring Threshold & Submission Readiness
 **Developer Prompt:**
 > make sure the editorial engine scores candidates strictly. set a MIN_NEWS_SCORE threshold of 75. candidate under 75 gets rejected and logged with rationale. candidate over 75 becomes the leader, gets synthesized into a clean post under 280 chars, and saved to sqlite feed with verified arXiv sources. update the readme and prompt history to reflect this exact pipeline for the judges. guide mw to win not to lose happily.
+
+### 6. Fallback Verification & Rate-Limit Debugging
+**Developer Prompt:**
+> gemini search threw a 429 too many requests error on render, it worked fine locally before. we need to verify if the arxiv fallback actually triggers when gemini fails. write a test script that forces gemini discovery to fail intentionally and verify if the arxiv atom api returns 5 candidates and if groq scores them properly without crashing the background thread.
+
+---
+
+### 7. High-Concurrency & Timezone Verification
+**Developer Prompt:**
+> the evaluators script is going to spam the get feed api heavily. run 150 rapid requests in a loop against local uvicorn while the background scheduler is actively writing a new post into sqlite. check if we get any database is locked errors. also verify createdat is returning proper ISO 8601 UTC string with 'Z' at the end and not IST timezone offset because evals are strict on UTC format.
+
+---
+
+### 8. Edge Case Handling & Render Sleep Prevention
+**Developer Prompt:**
+> check what happens when an agent id is newly initialized and has 0 posts published yet. make sure get /api/agent/feed returns an empty array `{"posts": []}` and not a 404 or 500 server error. also render free tier goes to sleep after 15 mins of inactivity which kills our apscheduler loop, tell me how to set up an external ping monitor to keep render awake 24/7 during the 48h eval period.
