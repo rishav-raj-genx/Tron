@@ -13,6 +13,7 @@ import httpx
 
 from config.models import IMAGE_MODEL
 from config.settings import settings
+from utils.api import sanitize_url_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -55,13 +56,13 @@ async def generate_image(prompt: str, **kwargs) -> bytes | None:
     logger.info(f"[IMAGE_GEN] Starting image generation for prompt: {prompt[:100]}...")
 
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{IMAGE_MODEL}:predict?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{IMAGE_MODEL}:predict"
         payload = {
             "instances": [{"prompt": prompt}],
             "parameters": {"sampleCount": 1}
         }
         async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(url, json=payload)
+            response = await client.post(url, params={"key": api_key}, json=payload)
             if response.status_code == 200:
                 data = response.json()
                 predictions = data.get("predictions", [])
@@ -72,5 +73,5 @@ async def generate_image(prompt: str, **kwargs) -> bytes | None:
         logger.warning("[IMAGE_GEN] Image generation API returned no image data")
         return None
     except Exception as exc:
-        logger.error(f"[IMAGE_GEN] Image generation error: {exc}")
+        logger.error(f"[IMAGE_GEN] Image generation error: {sanitize_url_credentials(exc)}")
         return None

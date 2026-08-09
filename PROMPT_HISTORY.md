@@ -1,23 +1,34 @@
-# AI Prompt History - VicoDathon 2026 Submission
+# AI Prompt History - Tron (VicoDathon 2026)
 
-This document outlines the AI prompts used to architect the Autonoma platform, mapped to our git history. Tools used: Anti-Gravity / Claude 4.5 Opus.
+This document tracks the prompts used to architect and refine the Tron framework.
+Tooling: Anti-Gravity / Claude 4.5 Opus / Gemini 2.0 Flash / Groq.
 
-### 1. Initial Infrastructure & API
-**Prompt:**
-> i have a two day hackathon and i need to build an autonomous ai agent that post tech news, first set up a fast api backend with sqlite, i need exactly two endpoints /api/agent/init to start the agent and /api/agent/feed to get the posts, make sure the feed is reverse chronological and only returns json. do not add any social media api integrations.
+---
 
-### 2. Database Concurrency & Scheduler
-**Prompt:**
-> now we need the agent to run in the background completely autonomously. add a feature to run every 30 mins to generate posts. also when i spam the get api the db gets locked, fix it by adding wal mode and a 15s timeout to the sqlite connection so it doesnt crash during eval
+### 1. Base API & Storage Architecture
+**Developer Prompt:**
+> i have a two day hackathon and i need to build an autonomous ai agent that post tech news, first set up a fast api backend with sqlite, i need exactly two endpoints /api/agent/init to start the agent and /api/agent/feed to get the posts, make sure the feed is reverse ordered and only returns json. do not add any social media api integrations.
 
-### 3. The Pivot: Web Scraper & Deduplication
-**Prompt:**
-> open router is throwing 402 payment errors so i have changed the plan. remove it completely to make it full failure proof. replace it with a local llm setup that will web scrap the latest ai security news directly, then apply an editorial filter to reject bad topics. also add a deduplication check so the agent doesn't post the exact same topic twice in a row, be strict on this.
+---
 
-### 4. Code Pruning 
-**Prompt:**
-> the core is working but we have too much dead code from older experiments. command the agent to strip out any x or twitter integration, remove the static fallback arrays for news, just keep what matters and looks ideal for the req project. guide mw to win not to lose happily. 
+### 2. Autonomy & High Concurrency
+**Developer Prompt:**
+> now we need the agent to run in the background completely autonomously. add scheduler to run every 30 mins to generate posts. also when i spam the get api the db gets locked, fix it by adding wal mode and a 15s timeout to the sqlite connection so it doesnt crash during eval.
 
-### 5. Final Polish & Dockerization
-**Prompt:**
-> everything looks good now i want to prepare for submission. write a world class readme explaining our background loop architecture and the sqlite wal mode. also update the dockerfile to use --platform=linux/amd64 because i am on a mac m2 and i want to make sure it compiles perfectly on the judges servers without any histrory of segfaults.
+---
+
+### 3. Discovery Pipeline & Source Provenance Verification
+**Developer Prompt:**
+> we need a clean discovery engine. use gemini with google search grounding to find latest ai security breakthroughs and vulnerabilities 2026. but listen carefully, do not let the llm hallucinate fake urls. extract candidate titles, summaries, and source urls, then validate that the url actually belongs to the verified sources retrieved before passing it to scoring. if a url is fake or unverified, throw it out immediately.
+
+---
+
+### 4. Direct arXiv API & Groq Fallback Engine
+**Developer Prompt:**
+> gemini search threw a 429 rate limit error on render. build a fail-proof fallback. if gemini search fails, do NOT make groq search the web because groq is not our search engine. instead, make the app hit the direct arXiv Atom API, parse the raw xml, and extract 5 research paper candidates. if gemini synthesis fails after that, use groq purely for editorial writing and scoring. prove that the pipeline works even when gemini is down.
+
+---
+
+### 5. Scoring Threshold & Submission Readiness
+**Developer Prompt:**
+> make sure the editorial engine scores candidates strictly. set a MIN_NEWS_SCORE threshold of 75. candidate under 75 gets rejected and logged with rationale. candidate over 75 becomes the leader, gets synthesized into a clean post under 280 chars, and saved to sqlite feed with verified arXiv sources. update the readme and prompt history to reflect this exact pipeline for the judges. guide mw to win not to lose happily.

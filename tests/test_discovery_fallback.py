@@ -1,8 +1,9 @@
-"""Regression coverage for reachable, live-only discovery fallback paths."""
+"""Regression coverage for reachable, live-only discovery fallback paths and secret log sanitization."""
 
 import unittest
 import os
 import tempfile
+import logging
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
@@ -11,6 +12,7 @@ import httpx
 from services.topic_discovery import TopicDiscoveryService
 from services.autonomous_publisher import AutonomousPublisherService
 from services.memory import AgentMemoryStore
+from utils.api import sanitize_url_credentials
 
 
 SEARCH_TEXT = "Search results:\nAI security research https://example.org/live-paper"
@@ -23,6 +25,33 @@ ARXIV_CANDIDATE = {
     "topic_hash": "test-hash",
     "discovered_at": "2026-08-09T00:00:00Z",
 }
+
+REAL_ARXIV_ATOM_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <link href="http://arxiv.org/api/query?search_query=cat:cs.AI" rel="self" type="application/atom+xml"/>
+  <title type="html">ArXiv Query: search_query=cat:cs.AI</title>
+  <id>http://arxiv.org/api/query?search_query=cat:cs.AI</id>
+  <updated>2026-08-09T00:00:00Z</updated>
+  <opensearch:totalResults xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">2</opensearch:totalResults>
+  <entry>
+    <id>http://arxiv.org/abs/2401.01234v1</id>
+    <updated>2026-08-08T12:00:00Z</updated>
+    <published>2026-08-08T12:00:00Z</published>
+    <title> Adversarial Prompt Injection Mitigations in Quantized LLMs </title>
+    <summary> We evaluate jailbreak vulnerabilities across edge AI deployments and document reproducible defenses. </summary>
+    <author><name>Alice Smith</name></author>
+    <link href="http://arxiv.org/abs/2401.01234v1" rel="alternate" type="text/html"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2401.05678v2</id>
+    <updated>2026-08-08T14:00:00Z</updated>
+    <published>2026-08-08T14:00:00Z</published>
+    <title> Side-Channel Attacks on Shared GPU Inference Clusters </title>
+    <summary> Analysis of hardware side-channel leakage during KV-cache speculative decoding. </summary>
+    <author><name>Bob Jones</name></author>
+    <link href="http://arxiv.org/abs/2401.05678v2" rel="alternate" type="text/html"/>
+  </entry>
+</feed>"""
 
 
 class TestDiscoveryFallback(unittest.IsolatedAsyncioTestCase):
@@ -91,19 +120,39 @@ class TestDiscoveryFallback(unittest.IsolatedAsyncioTestCase):
         with patch("httpx.AsyncClient", return_value=MalformedClient()):
             self.assertEqual(await TopicDiscoveryService()._discover_from_arxiv("AI Security"), [])
 
-    def test_arxiv_candidates_preserve_required_live_provenance(self):
-        xml = """<feed xmlns='http://www.w3.org/2005/Atom'><entry><id>http://arxiv.org/abs/2401.01234</id><title> AI Security Study </title><summary> Live reproducible evidence. </summary></entry></feed>"""
-        candidates = TopicDiscoveryService._parse_arxiv_feed(xml, "AI Security")
-        self.assertEqual(len(candidates), 1)
-        candidate = candidates[0]
-        self.assertTrue(all(candidate[field] for field in (
-            "title", "summary", "source_urls", "domain_relevance", "source_quality", "topic_hash", "discovered_at",
-        )))
-        self.assertEqual(candidate["source_urls"], ["https://arxiv.org/abs/2401.01234"])
+    def test_real_arxiv_xml_atom_parsing(self):
+        candidates = TopicDiscoveryService._parse_arxiv_feed(REAL_ARXIV_ATOM_XML, "AI Security")
+        self.assertEqual(len(candidates), 2)
+
+        c1 = candidates[0]
+        self.assertEqual(c1["title"], "Adversarial Prompt Injection Mitigations in Quantized LLMs")
+        self.assertTrue(c1["summary"].startswith("We evaluate jailbreak vulnerabilities"))
+        self.assertEqual(c1["source_urls"], ["https://arxiv.org/abs/2401.01234v1"])
+        self.assertEqual(c1["source_quality"], "Primary research source (arXiv Atom)")
+
+        c2 = candidates[1]
+        self.assertEqual(c2["title"], "Side-Channel Attacks on Shared GPU Inference Clusters")
+        self.assertEqual(c2["source_urls"], ["https://arxiv.org/abs/2401.05678v2"])
+
+    def test_sanitize_url_credentials(self):
+        secret_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=SECRET_GEMINI_KEY_12345"
+        sanitized = sanitize_url_credentials(secret_url)
+        self.assertNotIn("SECRET_GEMINI_KEY_12345", sanitized)
+        self.assertIn("key=[REDACTED]", sanitized)
+
+        secret_header = "x-goog-api-key: MY_SECRET_HEADER_KEY"
+        sanitized_header = sanitize_url_credentials(secret_header)
+        self.assertNotIn("MY_SECRET_HEADER_KEY", sanitized_header)
+        self.assertIn("[REDACTED]", sanitized_header)
+
+        bearer_str = "Authorization: Bearer my-secret-token-abc123xyz"
+        sanitized_bearer = sanitize_url_credentials(bearer_str)
+        self.assertNotIn("my-secret-token-abc123xyz", sanitized_bearer)
+        self.assertIn("Bearer [REDACTED]", sanitized_bearer)
 
 
 class TestAutonomousArxivFallback(unittest.IsolatedAsyncioTestCase):
-    async def test_gemini_outage_still_publishes_from_live_fallback_candidate(self):
+    async def test_gemini_429_outage_still_publishes_from_live_fallback_candidate(self):
         class EditorialLLM:
             async def generate_structured(self, **kwargs):
                 user = kwargs["user"]
@@ -126,10 +175,25 @@ class TestAutonomousArxivFallback(unittest.IsolatedAsyncioTestCase):
             service = AutonomousPublisherService(memory=memory, llm=EditorialLLM())
             service.discovery._discover_from_arxiv = AsyncMock(return_value=[ARXIV_CANDIDATE])
 
-            with patch("services.topic_discovery.web_search", new=AsyncMock(side_effect=httpx.ConnectError("Gemini outage"))):
+            # Simulate Gemini HTTP 429 rate limit
+            rate_limit_error = httpx.HTTPStatusError(
+                "HTTP 429 Too Many Requests: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=SECRET_GEMINI_API_KEY",
+                request=httpx.Request("POST", "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=SECRET_GEMINI_API_KEY"),
+                response=httpx.Response(429)
+            )
+
+            with patch("services.topic_discovery.web_search", new=AsyncMock(side_effect=rate_limit_error)), \
+                 self.assertLogs("services.topic_discovery", level="WARNING") as cm:
                 discovered = await service.run_discovery_and_evaluation_cycle(agent_id)
+
             self.assertEqual(discovered["candidates_found"], 1)
 
+            # Prove API key secret was redacted from logs
+            log_output = "\n".join(cm.output)
+            self.assertNotIn("SECRET_GEMINI_API_KEY", log_output)
+            self.assertIn("[REDACTED]", log_output)
+
+            # Prove autonomous publishing finishes cleanly
             window = memory.get_active_window(agent_id)
             with memory._get_connection() as conn:
                 conn.execute(

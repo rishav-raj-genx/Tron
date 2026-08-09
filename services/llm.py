@@ -20,6 +20,7 @@ import httpx
 
 from config.models import GEMINI_MODEL, GROQ_MODEL
 from config.settings import settings
+from utils.api import sanitize_url_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -132,13 +133,13 @@ class LLMClient:
         try:
             return await self._call_gemini_text(system=system, user=user)
         except Exception as exc:
-            logger.warning(f"[LLM] Gemini primary request failed ({exc}). Attempting Groq fallback...")
+            logger.warning(f"[LLM] Gemini primary request failed ({sanitize_url_credentials(exc)}). Attempting Groq fallback...")
 
         # Try Groq Fallback
         try:
             return await self._call_groq_text(messages=messages)
         except Exception as exc:
-            logger.error(f"[LLM] Both Gemini and Groq providers failed: {exc}")
+            logger.error(f"[LLM] Both Gemini and Groq providers failed: {sanitize_url_credentials(exc)}")
             raise
 
     async def generate_structured(
@@ -166,14 +167,14 @@ class LLMClient:
             raw_text = await self._call_gemini_text(system=system, user=user, target_schema=target_schema, is_json=True)
             return _validate_structured_response(_clean_and_parse_json(raw_text), target_schema)
         except Exception as exc:
-            logger.warning(f"[LLM] Gemini primary structured generation failed ({exc}). Attempting Groq fallback...")
+            logger.warning(f"[LLM] Gemini primary structured generation failed ({sanitize_url_credentials(exc)}). Attempting Groq fallback...")
 
         # Try Groq Fallback
         try:
             raw_text = await self._call_groq_text(messages=messages, target_schema=target_schema, is_json=True)
             return _validate_structured_response(_clean_and_parse_json(raw_text), target_schema)
         except Exception as exc:
-            logger.error(f"[LLM] Both Gemini and Groq providers failed structured generation: {exc}")
+            logger.error(f"[LLM] Both Gemini and Groq providers failed structured generation: {sanitize_url_credentials(exc)}")
             raise
 
     async def chat(
@@ -209,7 +210,7 @@ class LLMClient:
                 return _validate_structured_response(_clean_and_parse_json(raw_text), response_format or {})
             return {"content": raw_text}
         except Exception as exc:
-            logger.warning(f"[LLM] Gemini primary chat failed ({exc}). Attempting Groq fallback...")
+            logger.warning(f"[LLM] Gemini primary chat failed ({sanitize_url_credentials(exc)}). Attempting Groq fallback...")
 
         # Try Groq Fallback
         try:
@@ -218,7 +219,7 @@ class LLMClient:
                 return _validate_structured_response(_clean_and_parse_json(raw_text), response_format or {})
             return {"content": raw_text}
         except Exception as exc:
-            logger.error(f"[LLM] Both Gemini and Groq providers failed chat: {exc}")
+            logger.error(f"[LLM] Both Gemini and Groq providers failed chat: {sanitize_url_credentials(exc)}")
             raise
 
     # -------------------------------------------------------------------------
