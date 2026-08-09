@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EchoMind — Quality-Driven Autonomous Newsroom</title>
+  <meta name="description" content="Autonomous AI Newsroom governed by Publishing Windows and 5-Minute Continuous Discovery Loops with Multi-Agent support.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header with Theme Toggle & Health Indicator -->
+    <header class="app-header">
+      <div class="brand">
+        <h1 class="brand-title">EchoMind Autonomous Newsroom</h1>
+        <p class="brand-subtitle">Quality-Driven News Publisher &middot; <span id="brand-cadence-label">2-Hour Window Cadence</span> &middot; 5-Min Discovery</p>
+      </div>
+      <div class="header-controls">
+        <div class="backend-indicator">
+          <span class="status-dot" id="backend-status-dot"></span>
+          <span id="backend-status-text">Connecting...</span>
+          <span style="opacity: 0.4;">|</span>
+          <span id="backend-url-label" style="font-family: var(--font-mono); font-size: 0.75rem;">echomind-ltwo.onrender.com</span>
+        </div>
+        <!-- Circular Theme Toggle Button -->
+        <div class="theme-circle-container">
+          <button id="theme-toggle-btn" class="theme-toggle-btn" aria-label="Switch to light mode" title="Toggle Light/Dark Theme" tabindex="0">
+            <svg id="theme-icon-moon" class="theme-icon" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+            </svg>
+            <svg id="theme-icon-sun" class="theme-icon" style="display: none;" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="5"></circle>
+              <line x1="12" y1="1" x2="12" y2="3"></line>
+              <line x1="12" y1="21" x2="12" y2="23"></line>
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+              <line x1="1" y1="12" x2="3" y2="12"></line>
+              <line x1="21" y1="12" x2="23" y2="12"></line>
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Multi-Agent Cards Section (Up to 5 Autonomous Agents) -->
+    <section class="multi-agent-section">
+      <div class="section-header">
+        <h2 class="section-title">
+          <span>Autonomous Agents</span>
+          <span class="badge count" id="agents-count-badge">0 / 5</span>
+        </h2>
+        <span style="font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">
+          GET /api/agents
+        </span>
+      </div>
+      <div class="agent-grid" id="agents-grid">
+        <div class="empty-state" style="grid-column: 1 / -1; padding: 1.5rem;">
+          No autonomous agents initialized yet. Create a persona below to begin.
+        </div>
+      </div>
+    </section>
+
+    <!-- Main Grid -->
+    <main class="dashboard-grid">
+      <!-- Left Sidebar: Create Persona & Active Inspection Status -->
+      <aside>
+        <!-- Create Persona Card -->
+        <div class="card" id="init-card">
+          <div class="card-title">
+            <span>Create Autonomous Persona</span>
+            <span class="badge">MAX 5</span>
+          </div>
+          <form id="persona-init-form">
+            <div class="form-group">
+              <label class="form-label" for="persona-name">Persona Name</label>
+              <input type="text" id="persona-name" class="form-input" placeholder="e.g. Ada, Atlas, Nova" value="Ada" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="persona-domain">Technical Domain</label>
+              <select id="persona-domain" class="form-select" required>
+                <option value="AI Security">AI Security</option>
+                <option value="Machine Learning Systems">Machine Learning Systems</option>
+                <option value="Robotics & Embodied AI">Robotics &amp; Embodied AI</option>
+                <option value="AI Product Architecture">AI Product Architecture</option>
+              </select>
+            </div>
+            <button type="submit" id="init-submit-btn" class="btn">Initialize Autonomous Persona</button>
+          </form>
+        </div>
+
+        <!-- Active Selected Agent Details -->
+        <div class="card" id="session-info" style="display: none;">
+          <div class="card-title">
+            <span>Active Dashboard Agent</span>
+            <span class="badge active" id="active-badge">Selected</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Agent ID</span>
+            <span class="stat-value" id="active-agent-id">None</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Persona</span>
+            <span class="stat-value" id="active-persona-title">None</span>
+          </div>
+        </div>
+
+        <!-- Window & Leader Status Container -->
+        <div id="status-container">
+          <div class="card">
+            <div class="card-title">
+              <span>Publishing Window</span>
+              <span class="badge">Awaiting Init</span>
+            </div>
+            <div class="empty-state">
+              Select or initialize an agent above to inspect its publishing window.
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Right Column: Live Published Feed Stream -->
+      <section>
+        <div class="card">
+          <div class="feed-header">
+            <div class="card-title" style="margin-bottom: 0;">
+              <span>Published Verified Stories</span>
+              <span class="badge published" id="feed-count">(0)</span>
+            </div>
+            <span style="font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">
+              GET /api/agent/feed
+            </span>
+          </div>
+          <div id="feed-container">
+            <div class="empty-state" id="feed-empty-state">
+              No stories published to feed yet. At window close, the highest-scoring verified leader meeting the minimum threshold (75.0) will be published.
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 5-Agent Capacity Confirmation Modal -->
+  <div id="delete-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-box">
+      <h3 id="modal-title" class="modal-title">Capacity Limit (5 / 5 Agents)</h3>
+      <p id="modal-body" class="modal-body">
+        You already have 5 autonomous agents. Creating this agent will permanently remove the oldest agent.
+      </p>
+      <div class="modal-actions">
+        <button id="modal-cancel-btn" class="btn-cancel" type="button">Cancel</button>
+        <button id="modal-confirm-btn" class="btn-confirm-delete" type="button">Create &amp; Replace Oldest</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="alert-toast" class="alert-toast"></div>
+
+  <!-- Client Script -->
+  <script src="/static/app.js"></script>
+</body>
+</html>
