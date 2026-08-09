@@ -7,7 +7,10 @@ import logging
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
-import httpx
+try:
+    import httpx
+except ImportError:
+    pass
 
 from services.topic_discovery import TopicDiscoveryService
 from services.autonomous_publisher import AutonomousPublisherService

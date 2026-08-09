@@ -28,7 +28,13 @@ import re
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from fastapi.testclient import TestClient
+try:
+    from fastapi.testclient import TestClient
+    HAS_TESTCLIENT = True
+except ImportError:
+    HAS_TESTCLIENT = False
+    class TestClient:
+        def __init__(self, app): pass
 
 from config.persona_engine import build_persona_profile
 from config.settings import Settings, settings

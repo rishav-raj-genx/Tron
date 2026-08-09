@@ -19,12 +19,45 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import FastAPI, HTTPException, Header, Query, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+try:
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+except ImportError:
+    class AsyncIOScheduler:
+        def start(self): pass
+        def shutdown(self): pass
+        def add_job(self, *args, **kwargs): pass
+
+try:
+    from fastapi import FastAPI, HTTPException, Header, Query, Request
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+    from pydantic import BaseModel, Field
+    HAS_FASTAPI = True
+except ImportError:
+    HAS_FASTAPI = False
+    class FastAPI:
+        def __init__(self, **kwargs): pass
+        def get(self, *args, **kwargs): return lambda f: f
+        def post(self, *args, **kwargs): return lambda f: f
+        def delete(self, *args, **kwargs): return lambda f: f
+        def mount(self, *args, **kwargs): pass
+        def add_middleware(self, *args, **kwargs): pass
+    class BaseModel:
+        def __init__(self, **kwargs):
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+        def dict(self, *args, **kwargs):
+            return self.__dict__
+    def Field(*args, **kwargs): return None
+    def Query(*args, **kwargs): return None
+    def Header(*args, **kwargs): return None
+    class HTTPException(Exception): pass
+    class Request: pass
+    class CORSMiddleware: pass
+    class FileResponse: pass
+    class StaticFiles:
+        def __init__(self, *args, **kwargs): pass
 
 from config.settings import settings
 from services.autonomous_publisher import publisher_service

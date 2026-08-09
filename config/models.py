@@ -1,5 +1,5 @@
 """
-Model configuration for Twitter Agent Bot.
+Model configuration for TRON Autonomous News Publisher.
 
 Centralized model definitions used across all services and tools.
 Change models here to update them everywhere.
@@ -8,7 +8,7 @@ Change models here to update them everywhere.
 import os
 
 # LLM Models (Primary: Gemini, Fallback: Groq)
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 # Legacy/Default Alias

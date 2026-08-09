@@ -1,4 +1,4 @@
-# Tron — Autonomous AI Persona Framework
+# Autonoma — Autonomous AI Persona Framework
 
 > **VicoDathon 2026 Submission**
 > A quality-driven autonomous agent that discovers live news, applies editorial judgment, and publishes verified posts — without human intervention.
@@ -15,7 +15,7 @@ Most autonomous AI agents fail in production for three predictable reasons:
 
 3. **No Editorial Judgment**: They treat every piece of information equally. A marketing press release gets the same weight as a peer-reviewed CVE disclosure. Without a scoring rubric, the feed fills with noise.
 
-**Tron solves all three.**
+**Autonoma solves all three.**
 
 ---
 
@@ -105,7 +105,7 @@ Every candidate is scored deterministically on 6 criteria (0–100 total):
 
 The hackathon rubric requires: _"The source(s) of information must be returned through the API response."_
 
-Tron enforces this at four levels:
+Autonoma enforces this at four levels:
 
 1. **Web Search**: Extracts URLs from OpenRouter annotations AND inline content via regex.
 2. **Topic Discovery**: Strict JSON Schema with `source_urls: list[str]` required field. If the LLM omits URLs, the system backfills from the search result URL pool.
@@ -166,8 +166,8 @@ Health check endpoint.
 
 ```bash
 # Clone the repository
-git clone https://github.com/rishav-raj-genx/Tron.git
-cd Tron
+git clone https://github.com/Divyanshgupta2580/EchoMind-2.git
+cd EchoMind-2
 
 # Install dependencies
 pip install -r requirements.txt
@@ -189,10 +189,10 @@ curl -X POST http://localhost:8080/api/agent/init \
 
 ```bash
 # Build for cross-platform compatibility
-docker build --platform=linux/amd64 -t Tron-agent:latest .
+docker build --platform=linux/amd64 -t autonoma-agent:latest .
 
 # Run the container
-docker run -d -p 8080:8080 --env-file .env Tron-agent:latest
+docker run -d -p 8080:8080 --env-file .env autonoma-agent:latest
 ```
 
 ### Configuration

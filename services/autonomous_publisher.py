@@ -1,23 +1,24 @@
 """
 Autonomous Persona Publishing Service.
 
-Orchestrates the ~35-minute discovery loop and the 2-hour quality-driven publishing window:
-1. Runs discovery & evaluation approximately every ~35 minutes (with ±5-min jitter):
+Orchestrates the discovery loop and quality-driven publishing window:
+1. Runs discovery & evaluation:
    - Discovers news candidates from live web sources.
    - Calculates deterministic 0-100 scores across 6 criteria.
    - Persists all candidates, scores, and rejection decisions to SQLite.
    - Dynamically tracks and updates the window's top-scoring leader.
-2. At the end of every 2-hour window (or when window ends_at <= now):
+2. At the end of every publishing window (ends_at <= now):
    - Atomically claims the window via SQLite CAS lock (OPEN -> SELECTING).
-   - Compares all eligible candidates in the window.
-   - Selects the highest-quality leader.
-   - Verifies the leader meets MIN_NEWS_SCORE (default: 75.0).
-   - If qualified: publishes exactly ONE post to the SQLite feed and records it.
-   - If no candidate meets threshold: publishes NOTHING (status: NO_QUALIFIED_STORY).
-   - Closes the window and opens the next 2-hour window.
-3. Thread-safe & Concurrency Protected:
-   - Uses per-agent asyncio.Lock to prevent overlapping discovery cycles.
-   - Uses SQLite atomic CAS transitions to prevent duplicate publications.
+   - Retrieves ALL eligible candidates sorted by score descending.
+   - Sequentially attempts each candidate through the full pipeline:
+     source URL validation -> AI article rewrite -> content validation -> final duplicate check (deterministic & fail-closed semantic).
+   - Publishes ONLY the first candidate that passes every check.
+   - If candidate fails at ANY stage, logs failure and tries next candidate.
+   - If all fail: publishes NOTHING (status: NO_QUALIFIED_STORY).
+   - Closes window and opens next window.
+3. Concurrency & Double-Publish Protection:
+   - Per-agent asyncio.Lock prevents overlapping discovery cycles.
+   - Atomic CAS transition (OPEN -> SELECTING) guarantees AT MOST ONE published post per window.
 """
 
 import asyncio
@@ -32,6 +33,7 @@ from services.editorial_engine import EditorialEngine
 from services.llm import LLMClient
 from services.memory import AgentMemoryStore, memory_store
 from services.topic_discovery import TopicDiscoveryService
+from utils.duplicate import DuplicateStatus, check_deterministic_duplicate
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +42,7 @@ class AutonomousPublisherService:
     """
     Quality-driven autonomous publishing orchestrator.
     Publishes exclusively to the SQLite feed_posts table.
-    Guarantees: ONE 2-HOUR WINDOW = AT MOST ONE PUBLISHED POST.
+    Guarantees: ONE WINDOW = AT MOST ONE PUBLISHED POST.
     """
 
     def __init__(
@@ -53,8 +55,6 @@ class AutonomousPublisherService:
         self.llm = llm or LLMClient()
         self.discovery = TopicDiscoveryService(self.llm)
         self.editorial = EditorialEngine(self.llm, self.memory)
-        # Social publishing is deliberately optional.  The SQLite feed is the
-        # product contract and no external publisher is allowed to block it.
         self.publisher = publisher
         self._agent_locks: dict[str, asyncio.Lock] = {}
 
@@ -84,7 +84,7 @@ class AutonomousPublisherService:
             logger.error(f"[PUBLISHER] Agent {agent_id} not found in memory store.")
             return {"success": False, "error": f"Agent {agent_id} not found"}
 
-        # Step 1: Ensure active 2-hour window exists or recover it
+        # Step 1: Ensure active window exists or recover it
         window = self.memory.get_or_create_active_window(agent_id, duration_minutes=settings.publish_window_minutes)
         window_id = window["window_id"]
         now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -102,8 +102,6 @@ class AutonomousPublisherService:
         try:
             raw_candidates = await self.discovery.discover_candidate_topics(agent["domain"], recent_hashes)
         except Exception as exc:
-            # Retrieval failures are expected to be transient.  Keep the
-            # scheduler and feed endpoint alive and try again next interval.
             logger.warning("[DISCOVERY] Live source failure for %s: %s", agent_id, exc)
             return {
                 "success": False,
@@ -170,13 +168,19 @@ class AutonomousPublisherService:
 
     async def process_window_close(self, agent_id: str, window_id: str) -> dict[str, Any]:
         """
-        Execute idempotent, race-free window close evaluation:
-        1. Verifies that the target window exists and is in 'OPEN' status.
-        2. Atomically claims the window (OPEN -> SELECTING) in SQLite before publishing.
-        3. If rowcount == 0, another execution claimed or closed it; returns safely without side-effects.
-        4. Selects the highest quality eligible leader (score >= MIN_NEWS_SCORE).
-        5. If qualified: saves exactly ONE post to the SQLite feed_posts table.
-        6. If no qualified candidate: sets status to NO_QUALIFIED_STORY, publishes nothing.
+        Execute sequential candidate processing & window close evaluation:
+        1. Verify target window exists and is in 'OPEN' status.
+        2. Atomically claim window (OPEN -> SELECTING) in SQLite CAS lock.
+        3. Retrieve ALL eligible candidates for window sorted by score DESC.
+        4. Sequentially attempt each candidate from highest score to lowest:
+           a. Validate source URLs.
+           b. AI article rewrite & synthesis.
+           c. Validate content structure & sources.
+           d. Perform final pre-publication duplicate check (URL, title, fingerprint, semantic fail-closed).
+        5. Publish ONLY the first candidate that passes every check.
+        6. If candidate fails at ANY stage, log failure and try next candidate.
+        7. If ALL candidates fail: set window status to NO_QUALIFIED_STORY, publish NOTHING.
+        8. Open next publishing window.
         """
         agent = self.memory.get_agent(agent_id)
         if not agent:
@@ -212,10 +216,10 @@ class AutonomousPublisherService:
         logger.info(f"[WINDOW] === Processing Window Close for {window_id} (Agent: '{agent['name']}') ===")
         profile = build_persona_profile(agent["name"], agent["domain"])
 
-        # Retrieve best eligible leader in window
-        leader = self.memory.get_current_leader(window_id, min_score=settings.min_news_score)
+        # Retrieve ALL eligible candidates sorted by score DESC
+        eligible_candidates = self.memory.get_eligible_candidates(window_id, min_score=settings.min_news_score)
 
-        if not leader:
+        if not eligible_candidates:
             logger.info(f"[SELECTION] No candidate met minimum score {settings.min_news_score:.1f}. Publishing NOTHING.")
             self.memory.close_window(window_id=window_id, status="NO_QUALIFIED_STORY")
             new_window = self.memory.create_window(agent_id, duration_minutes=settings.publish_window_minutes)
@@ -227,66 +231,119 @@ class AutonomousPublisherService:
                 "next_window_id": new_window["window_id"]
             }
 
-        # Final editorial validation and synthesis
-        logger.info(f"[SELECTION] Selected winning candidate: '{leader['title']}' with score={leader['score']:.1f}")
-        try:
-            post_data = await self.editorial.synthesize_post_for_leader(agent_id, profile, leader)
-        except Exception as exc:
-            logger.warning("[PUBLISH] Refusing publication for invalid synthesis: %s", exc)
-            self.memory.close_window(window_id=window_id, status="NO_QUALIFIED_STORY")
+        # Sequential T-30 candidate attempt loop (highest score to lowest)
+        for candidate in eligible_candidates:
+            cand_id = candidate["candidate_id"]
+            title = candidate["title"]
+            score = candidate["score"]
+            logger.info(f"[T-30] Attempting candidate '{title}' (id={cand_id}, score={score:.1f})")
+
+            # Step 1: Validate source URLs
+            trusted_sources = candidate.get("source_urls", [])
+            if isinstance(trusted_sources, str):
+                trusted_sources = [trusted_sources]
+            clean_sources = [
+                str(u).strip() for u in trusted_sources
+                if isinstance(u, str) and str(u).strip().startswith("http")
+            ]
+            if not clean_sources:
+                reason = "No valid http/https source URLs"
+                logger.warning(f"[T-30] Rejecting candidate '{title}': {reason}")
+                self.memory.update_candidate_status(cand_id, "REJECTED", rejection_reason=reason)
+                continue
+
+            # Step 2: AI Rewrite & Synthesis
+            try:
+                post_data = await self.editorial.synthesize_post_for_leader(agent_id, profile, candidate)
+            except Exception as exc:
+                reason = f"AI rewrite / synthesis failed: {exc}"
+                logger.warning(f"[T-30] Rejecting candidate '{title}': {reason}")
+                self.memory.update_candidate_status(cand_id, "REJECTED", rejection_reason=reason)
+                continue
+
+            # Step 3: Validate synthesized article content & sources
+            post_text = post_data.get("text", "").strip()
+            rationale = post_data.get("rationale", "").strip()
+            sources = post_data.get("sources", [])
+
+            if not post_text or not rationale or not sources:
+                reason = "Synthesized post text, rationale, or sources empty"
+                logger.warning(f"[T-30] Rejecting candidate '{title}': {reason}")
+                self.memory.update_candidate_status(cand_id, "REJECTED", rejection_reason=reason)
+                continue
+
+            if not set(sources).issubset(set(clean_sources)):
+                reason = "Synthesized post returned unverified source URLs"
+                logger.warning(f"[T-30] Rejecting candidate '{title}': {reason}")
+                self.memory.update_candidate_status(cand_id, "REJECTED", rejection_reason=reason)
+                continue
+
+            # Step 4: Final Pre-publication Duplicate Check (Deterministic & Semantic Fail-Closed)
+            recent_published = self.memory.get_feed(agent_id, limit=50)
+            is_det_dup, det_reason = check_deterministic_duplicate(
+                candidate.get("url") or candidate.get("source_url") or clean_sources[0],
+                title,
+                post_text,
+                recent_published
+            )
+            if is_det_dup:
+                reason = f"Final duplicate check failed: {det_reason}"
+                logger.warning(f"[T-30] Rejecting candidate '{title}': {reason}")
+                self.memory.update_candidate_status(cand_id, "REJECTED", rejection_reason=reason)
+                continue
+
+            dup_status, matched_post = await self.editorial.check_semantic_duplicate(
+                agent_id,
+                title,
+                candidate.get("summary", "")
+            )
+            if dup_status in (DuplicateStatus.DUPLICATE, DuplicateStatus.UNKNOWN):
+                reason = f"Final semantic duplicate check returned {dup_status.value} (matched: {matched_post})"
+                logger.warning(f"[T-30] Rejecting candidate '{title}': {reason}")
+                self.memory.update_candidate_status(cand_id, "REJECTED", rejection_reason=reason)
+                continue
+
+            # Step 5: Candidate passed ALL checks! Save post to SQLite feed & publish ONE article for window.
+            post_id = f"p-{uuid.uuid4().hex[:8]}"
+            logger.info(f"[PUBLISH] Candidate '{title}' passed all checks. Saving post {post_id} to feed ({len(post_text)} chars)")
+
+            saved_post = self.memory.save_post(
+                agent_id=agent_id,
+                text=post_text,
+                rationale=rationale,
+                sources=sources,
+                topic_hash=post_data["topic_hash"],
+                post_id=post_id
+            )
+
+            self.memory.update_candidate_status(cand_id, "PUBLISHED")
+            self.memory.close_window(
+                window_id=window_id,
+                status="PUBLISHED",
+                selected_candidate_id=cand_id,
+                post_id=post_id
+            )
+            logger.info(f"[PUBLISH] Post {post_id} saved to feed successfully. Window {window_id} closed as PUBLISHED.")
+
+            # Open next window
             new_window = self.memory.create_window(agent_id, duration_minutes=settings.publish_window_minutes)
             return {
                 "success": True,
-                "action": "no_publication",
-                "window_status": "NO_QUALIFIED_STORY",
+                "action": "published",
+                "window_status": "PUBLISHED",
+                "post": saved_post,
                 "closed_window_id": window_id,
-                "next_window_id": new_window["window_id"],
+                "next_window_id": new_window["window_id"]
             }
 
-        trusted_sources = leader.get("source_urls", [])
-        if isinstance(trusted_sources, str):
-            trusted_sources = [trusted_sources]
-        if not post_data["sources"] or not set(post_data["sources"]).issubset(set(trusted_sources)):
-            logger.warning("[PUBLISH] Refusing publication with non-discovered source URLs")
-            self.memory.close_window(window_id=window_id, status="NO_QUALIFIED_STORY")
-            new_window = self.memory.create_window(agent_id, duration_minutes=settings.publish_window_minutes)
-            return {
-                "success": True,
-                "action": "no_publication",
-                "window_status": "NO_QUALIFIED_STORY",
-                "closed_window_id": window_id,
-                "next_window_id": new_window["window_id"],
-            }
-
-        # Publish directly to SQLite feed_posts table
-        post_id = f"p-{uuid.uuid4().hex[:8]}"
-        logger.info(f"[PUBLISH] Saving post {post_id} to feed for window {window_id} ({len(post_data['text'])} chars)")
-
-        saved_post = self.memory.save_post(
-            agent_id=agent_id,
-            text=post_data["text"],
-            rationale=post_data["rationale"],
-            sources=post_data["sources"],
-            topic_hash=post_data["topic_hash"],
-            post_id=post_id
-        )
-
-        self.memory.update_candidate_status(leader["candidate_id"], "PUBLISHED")
-        self.memory.close_window(
-            window_id=window_id,
-            status="PUBLISHED",
-            selected_candidate_id=leader["candidate_id"],
-            post_id=post_id
-        )
-        logger.info(f"[PUBLISH] Post {post_id} saved to feed successfully.")
-
-        # Open next 2-hour window
+        # If all candidates failed
+        logger.info(f"[SELECTION] All {len(eligible_candidates)} eligible candidates failed validation/synthesis/duplicate checks. Publishing NOTHING.")
+        self.memory.close_window(window_id=window_id, status="NO_QUALIFIED_STORY")
         new_window = self.memory.create_window(agent_id, duration_minutes=settings.publish_window_minutes)
         return {
             "success": True,
-            "action": "published",
-            "window_status": "PUBLISHED",
-            "post": saved_post,
+            "action": "no_publication",
+            "window_status": "NO_QUALIFIED_STORY",
             "closed_window_id": window_id,
             "next_window_id": new_window["window_id"]
         }

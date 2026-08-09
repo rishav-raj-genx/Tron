@@ -750,18 +750,24 @@ class AgentMemoryStore:
                 })
             return candidates
 
+    def get_eligible_candidates(self, window_id: str, min_score: float = 75.0) -> list[dict[str, Any]]:
+        """
+        Get all eligible candidates for a window meeting min_score, sorted by score DESC, discovered_at DESC.
+        Used by process_window_close for sequential T-30 candidate fallback attempts.
+        """
+        candidates = self.get_candidates_for_window(window_id)
+        eligible = [c for c in candidates if c["score"] >= min_score and c["status"] in ("ELIGIBLE", "LEADER", "SELECTED")]
+        eligible.sort(key=lambda x: (x["score"], x["discovered_at"]), reverse=True)
+        return eligible
+
     def get_current_leader(self, window_id: str, min_score: float = 75.0) -> dict[str, Any] | None:
         """
         Get the current best eligible candidate in a window that meets min_score.
         Deterministic tie-breaking uses highest score, then most recent discovered_at.
         """
-        candidates = self.get_candidates_for_window(window_id)
-        eligible = [c for c in candidates if c["score"] >= min_score and c["status"] in ("ELIGIBLE", "LEADER", "SELECTED")]
-        if eligible:
-            # Sort by score DESC, then discovered_at DESC
-            eligible.sort(key=lambda x: (x["score"], x["discovered_at"]), reverse=True)
-            return eligible[0]
-        return None
+        eligible = self.get_eligible_candidates(window_id, min_score=min_score)
+        return eligible[0] if eligible else None
+
 
     def update_candidate_status(
         self,
