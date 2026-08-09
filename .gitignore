@@ -1,0 +1,11 @@
+echo "venv/
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+.env
+.DS_Store" > .gitignore
+
+git add .gitignore
+git commit -m "chore: initial commit and gitignore setup"
