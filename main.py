@@ -177,6 +177,7 @@ class FeedPostItem(BaseModel):
 
 class FeedResponse(BaseModel):
     posts: list[FeedPostItem]
+    nextCursor: str | None = None
 
 
 class WindowStatus(BaseModel):
@@ -476,21 +477,27 @@ async def delete_single_agent(
 async def get_agent_feed(
     agentId: str | None = Query(
         None, max_length=64, pattern=AGENT_ID_REGEX, description="The unique agent identifier returned during initialization"
-    )
+    ),
+    limit: int = Query(default=20, ge=1, le=50, description="Number of feed posts to return (1-50)"),
+    cursor: str | None = Query(default=None, max_length=128, description="Keyset pagination cursor"),
 ):
     """
     Get the published feed for a given agent (or all published posts if agentId not provided).
+    Supports backward-compatible bounded keyset cursor pagination on (created_at DESC, id DESC).
 
     Strict API Contract:
     - createdAt MUST be an ISO 8601 UTC string (e.g. '2026-08-07T10:30:00Z')
     - sources MUST be an array of strings
-    - Sorted newest first (ORDER BY created_at DESC)
-    - If DB is empty, MUST return {"posts": []} with status 200 OK
+    - Sorted newest first (ORDER BY created_at DESC, id DESC)
+    - If DB is empty, MUST return {"posts": [], "nextCursor": null} with status 200 OK
     """
     try:
         clean_id = agentId.strip() if (agentId and isinstance(agentId, str)) else None
-        posts = memory_store.get_feed(agent_id=clean_id, limit=200)
-        return FeedResponse(posts=posts if posts is not None else [])
+        posts, next_cursor = memory_store.get_feed_paginated(agent_id=clean_id, limit=limit, cursor=cursor)
+        return FeedResponse(
+            posts=[FeedPostItem(**p) for p in posts],
+            nextCursor=next_cursor,
+        )
 
     except HTTPException:
         raise
@@ -567,22 +574,53 @@ async def get_agent_status(
 # COMPATIBILITY & MONITORING ENDPOINTS
 # ============================================================================
 
-@app.get("/health")
-@app.get("/healthz")
+@app.get("/healthz", status_code=200)
+async def healthz():
+    """Deep health and liveness check verifying SQLite WAL connectivity, scheduler, and active agent count.
+
+    Returns HTTP 200 with {"status": "ok", "db": "wal", "scheduler": ...} when healthy,
+    or HTTP 503 Service Unavailable if database access fails.
+    """
+    try:
+        health_info = memory_store.check_liveness()
+        return {
+            "status": "ok",
+            "db": health_info["db"],
+            "scheduler": "running" if scheduler.running else "stopped",
+            "active_agents": health_info["agent_count"],
+        }
+    except Exception as e:
+        logger.error(f"[HEALTH] Deep healthz check failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Database health check failed: {e}"
+        )
+
+
+@app.get("/health", status_code=200)
 async def health_check():
-    """Lightweight health check endpoint with system status."""
-    return {
-        "status": "healthy",
-        "scheduler_running": scheduler.running,
-        "total_posts": memory_store.count_posts(),
-        "registered_agents": len(memory_store.list_agents()),
-        "discovery_interval_minutes": settings.discovery_interval_minutes,
-        "publish_window_minutes": settings.publish_window_minutes,
-        "min_news_score": settings.min_news_score,
-        "max_agents": settings.max_agents,
-        "api_base_url": settings.api_base_url,
-        "version": "3.0.0"
-    }
+    """Detailed health check endpoint with comprehensive system status."""
+    try:
+        health_info = memory_store.check_liveness()
+        return {
+            "status": "healthy",
+            "scheduler_running": scheduler.running,
+            "db": health_info["db"],
+            "total_posts": memory_store.count_posts(),
+            "registered_agents": health_info["agent_count"],
+            "discovery_interval_minutes": settings.discovery_interval_minutes,
+            "publish_window_minutes": settings.publish_window_minutes,
+            "min_news_score": settings.min_news_score,
+            "max_agents": settings.max_agents,
+            "api_base_url": settings.api_base_url,
+            "version": "3.0.0"
+        }
+    except Exception as e:
+        logger.error(f"[HEALTH] Detailed health check failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Database health check failed: {e}"
+        )
 
 
 @app.get("/metrics")

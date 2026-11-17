@@ -227,7 +227,7 @@ class TestEchoMindNewsPublisher(unittest.TestCase):
         # 4. GET /health and /healthz
         h_res = client.get("/healthz")
         self.assertEqual(h_res.status_code, 200)
-        self.assertEqual(h_res.json()["status"], "healthy")
+        self.assertIn(h_res.json()["status"], ["healthy", "ok"])
 
     # =========================================================================
     # 5. SOURCE EXTRACTION & STRUCTURED SYNTHESIS

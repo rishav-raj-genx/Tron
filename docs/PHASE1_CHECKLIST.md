@@ -15,17 +15,22 @@
   - [x] Configure explicit CORS origins from `CORS_ORIGINS` setting (defaulting to safe local dev origins, never wildcard credentials).
   - [x] Add comprehensive test suite `tests/test_security_and_ratelimit.py` (20 new tests).
   - [x] Ensure 100% test pass (79/79 passing) and zero ruff lint errors.
-- [ ] **Step 1.2: Structured JSON Logging, Correlation IDs & Request Tracing Middleware**
-  - [ ] Structured JSON log formatter with contextual fields (`correlation_id`, `agent_id`, `duration_ms`).
-  - [ ] ASGI correlation ID middleware injecting `X-Request-ID` across all inbound requests.
-  - [ ] Propagate correlation ID across background discovery, evaluation iterations, and publishing windows.
+- [x] **Step 1.2: SQLite WAL Query Optimization, Composite Indexing, Backward-Compatible Feed Pagination & Deep `/healthz`**
+  - [x] Audit all SQL statements ensuring zero string interpolation with bound `?` parameters.
+  - [x] Configure connection pragmas on checkout (`PRAGMA journal_mode=WAL;`, `PRAGMA busy_timeout=15000;`, `PRAGMA synchronous=NORMAL;`, `PRAGMA foreign_keys=ON;`).
+  - [x] Add composite indexes covering keyset cursor pagination (`(agent_id, created_at DESC, id DESC)`, `(created_at DESC, id DESC)`) and deduplication (`(agent_id, topic_title)`, `(agent_id, topic_hash, status)`).
+  - [x] Implement atomic write transactions with `with conn:` and foreign-key safe cascade order.
+  - [x] Upgrade `GET /api/agent/feed` with bounded keyset cursor pagination (`limit: 1-50`, `cursor: max 128`), preserving 100% backward-compatible `"posts"` schema while exposing `"nextCursor"`.
+  - [x] Upgrade `GET /healthz` to perform deep SQLite liveness verification (`SELECT 1`, `PRAGMA journal_mode == "wal"`, active agents) returning HTTP 200 or HTTP 503 on database operational error.
+  - [x] Add comprehensive test suite `tests/test_db_optimization.py` (7 new tests).
+  - [x] Ensure 100% test pass (86/86 passing) and zero ruff lint errors.
 - [ ] **Step 1.3: Upstream Resilience, Dynamic Exponential Backoff Jitter & Circuit Breaker Failover**
   - [ ] Dynamic exponential backoff with full jitter for Gemini Search Grounding and REST invocations.
   - [ ] Circuit breaker state machine for secondary Groq failovers during sustained upstream network outages.
   - [ ] Transient failure handling with automatic fail-closed deduplication protection.
 - [ ] **Step 1.4: Evaluation Observability, Prometheus Metrics & Live Health Telemetry**
   - [ ] Prometheus metrics endpoint (`/metrics`) exposing cycle counts, scoring distributions, LLM latency, and window status.
-  - [ ] Deep health check (`/healthz` and `/health`) reporting SQLite WAL integrity, scheduler health, and provider status.
+  - [ ] Structured JSON log formatter with correlation IDs across discovery cycles, scoring iterations, and publishing windows.
 - [ ] **Step 1.5: Production Deployment Verification, Container Health Audit & Phase 1 Completion Tag**
   - [ ] Multi-stage production Dockerfile optimization and security scan.
   - [ ] Free-tier cloud container deployment verification (Render / Railway / Fly.io).
@@ -84,11 +89,44 @@
   - Reconciled `CORS_ORIGINS` setting with default local development origins (`http://localhost:8080`, `http://127.0.0.1:8080`, `http://localhost:3000`, `http://127.0.0.1:3000`).
   - Enforced disallowance of wildcard origins (`*`) with credentials.
 
+---
+
+## Step 1.2 Implementation & Audit Report
+
+### 1. SQLite Pragmas, Schema Indexing & Write Atomicity
+- **Connection Pragmas (`services/memory.py`):**
+  - `PRAGMA journal_mode=WAL;` (concurrent readers with single writer).
+  - `PRAGMA busy_timeout=15000;` (15s internal lock retry before raising busy exception).
+  - `PRAGMA synchronous=NORMAL;` (reduces fsync overhead while maintaining crash durability).
+  - `PRAGMA foreign_keys=ON;` (enforces relational integrity across all tables).
+- **Composite Indexes (`services/memory.py`):**
+  - `idx_posts_agent_created_id` on `feed_posts(agent_id, created_at DESC, id DESC)` for $O(1)$ agent feed keyset seek.
+  - `idx_posts_created_id` on `feed_posts(created_at DESC, id DESC)` for global feed seek.
+  - `idx_decisions_agent_title` on `editorial_decisions(agent_id, topic_title)` for fast topic decision deduplication.
+  - `idx_candidates_agent_hash_status` on `news_candidates(agent_id, topic_hash, status)` for published candidate coverage checks.
+- **Write Atomicity & Minimal Lock Duration:**
+  - All write transactions execute atomically under `with conn:` context managers.
+  - Strict foreign-key deletion order: `x_publication_records` -> `news_candidates` -> `publishing_windows` -> `feed_posts` -> `editorial_decisions` -> `agents`.
+  - Zero lock hold time across asynchronous network or LLM operations.
+
+### 2. Keyset Cursor Pagination & Deep `/healthz`
+- **Keyset Cursor Pagination (`services/memory.py` & `main.py`):**
+  - Implemented opaque URL-safe cursor serialization (`encode_cursor` / `decode_cursor`) on `(created_at, id)`.
+  - `GET /api/agent/feed` accepts `limit: int = Query(default=20, ge=1, le=50)` and optional `cursor: str = Query(default=None, max_length=128)`.
+  - Maintains 100% backward compatibility: returns `{"posts": [...], "nextCursor": "..."}` with exact existing fields (`id`, `createdAt`, `text`, `rationale`, `sources`).
+- **Deep Health Check (`main.py`):**
+  - `GET /healthz` executes `memory_store.check_liveness()`, executing `SELECT 1;`, verifying `PRAGMA journal_mode == "wal"`, scheduler status, and active agent count.
+  - Returns HTTP `200` with `{"status": "ok", "db": "wal", "scheduler": "running", "active_agents": ...}` when healthy.
+  - Returns HTTP `503 Service Unavailable` with diagnostic error details if database access raises an operational exception.
+
 ### 3. Test Verification Snapshot
-- **Total Tests:** 79 passing (100% pass rate in ~1.3s)
-- **New Test Suite:** `tests/test_security_and_ratelimit.py` (20 new tests)
-  - `TestInputValidationAndPayloadGuards` (11 tests)
-  - `TestMaxAgentsEnforcement` (1 test)
-  - `TestSlidingWindowRateLimiting` (5 tests)
-  - `TestSecurityHeadersAndCORS` (3 tests)
+- **Total Tests:** 86 passing (100% pass rate in ~1.36s)
+- **New Test Suite:** `tests/test_db_optimization.py` (7 new tests)
+  - Connection pragmas verification (4 pragmas).
+  - Composite indexes presence in `sqlite_master`.
+  - Keyset cursor serialization roundtrip.
+  - Limit boundary validation (0, 100, negative rejected with 422).
+  - Keyset pagination non-overlapping pages and schema preservation.
+  - Deep `/healthz` probe on healthy database (200).
+  - Deep `/healthz` probe on database failure (503).
 - **Linter Status:** `ruff check .` passes with 0 errors.

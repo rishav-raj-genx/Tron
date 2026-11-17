@@ -88,13 +88,13 @@ def reset_test_state() -> Generator[None, None, None]:
     """Autouse fixture ensuring clean global memory store and fresh rate limiters for every test."""
     rate_limiter_registry.reset_all()
     with memory_store._get_connection() as conn:
-        conn.execute("DELETE FROM publishing_windows")
-        conn.execute("DELETE FROM news_candidates")
-        conn.execute("DELETE FROM feed_posts")
-        conn.execute("DELETE FROM editorial_decisions")
-        conn.execute("DELETE FROM x_publication_records")
-        conn.execute("DELETE FROM agents")
-        conn.commit()
+        with conn:
+            conn.execute("DELETE FROM x_publication_records")
+            conn.execute("DELETE FROM news_candidates")
+            conn.execute("DELETE FROM publishing_windows")
+            conn.execute("DELETE FROM feed_posts")
+            conn.execute("DELETE FROM editorial_decisions")
+            conn.execute("DELETE FROM agents")
     yield
     rate_limiter_registry.reset_all()
 
