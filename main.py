@@ -14,6 +14,7 @@ FastAPI application providing:
 import asyncio
 import logging
 import re
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -67,13 +68,15 @@ except ImportError:
 from config.settings import settings
 from services.autonomous_publisher import publisher_service
 from services.memory import memory_store
+from utils.logging import (
+    configure_logging,
+    request_id_ctx,
+    set_request_id,
+)
 from utils.rate_limiter import RateLimitMiddleware, rate_limiter_registry
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+# Configure production structured JSON logging
+configure_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Global background scheduler
@@ -323,6 +326,74 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, send_with_headers)
 
 
+REQUEST_ID_REGEX = re.compile(r"^[a-zA-Z0-9\-]{1,64}$")
+
+
+class RequestCorrelationMiddleware:
+    """ASGI middleware ensuring request_id correlation propagation and HTTP telemetry logging."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        raw_req_id = None
+        for name, value in scope.get("headers", []):
+            if name.lower() == b"x-request-id":
+                try:
+                    raw_req_id = value.decode("latin1").strip()
+                except Exception:
+                    pass
+                break
+
+        if raw_req_id and REQUEST_ID_REGEX.match(raw_req_id):
+            request_id = raw_req_id
+        else:
+            request_id = str(uuid.uuid4())
+
+        token = set_request_id(request_id)
+        start_time = time.perf_counter()
+        status_code = 200
+
+        async def send_wrapper(message: dict[str, Any]) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message.get("status", 200)
+                headers = list(message.get("headers", []))
+                req_id_bytes = request_id.encode("latin1")
+                has_req_id = False
+                for idx, (h_name, _) in enumerate(headers):
+                    if h_name.lower() == b"x-request-id":
+                        headers[idx] = (b"x-request-id", req_id_bytes)
+                        has_req_id = True
+                        break
+                if not has_req_id:
+                    headers.append((b"x-request-id", req_id_bytes))
+                message["headers"] = headers
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        finally:
+            duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+            method = scope.get("method", "GET").upper()
+            path = scope.get("path", "")
+            logger.info(
+                f"HTTP {method} {path} status={status_code} duration_ms={duration_ms}",
+                extra={
+                    "http_method": method,
+                    "http_path": path,
+                    "http_status": status_code,
+                    "duration_ms": duration_ms,
+                    "request_id": request_id,
+                }
+            )
+            request_id_ctx.reset(token)
+
+
 app = FastAPI(
     title="Autonomous AI & Technology Persona News Publisher",
     description="Quality-driven autonomous news publisher with ~35-min discovery loops (±5-min jitter) and configuration-driven publishing windows",
@@ -346,6 +417,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestCorrelationMiddleware)
 
 # Mount static web frontend assets
 static_dir = Path(__file__).parent / "static"

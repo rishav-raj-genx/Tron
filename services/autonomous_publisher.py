@@ -23,6 +23,7 @@ Orchestrates the discovery loop and quality-driven publishing window:
 
 import asyncio
 import logging
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -33,7 +34,9 @@ from services.editorial_engine import EditorialEngine
 from services.llm import LLMClient
 from services.memory import AgentMemoryStore, memory_store
 from services.topic_discovery import TopicDiscoveryService
+from utils.circuit_breaker import CircuitState, gemini_breaker
 from utils.duplicate import DuplicateStatus, check_deterministic_duplicate
+from utils.logging import cycle_id_ctx, set_cycle_id
 from utils.url_validator import sanitize_source_urls
 
 logger = logging.getLogger(__name__)
@@ -80,92 +83,141 @@ class AutonomousPublisherService:
 
     async def _run_discovery_internal(self, agent_id: str) -> dict[str, Any]:
         """Internal worker for discovery and window evaluation."""
-        agent = self.memory.get_agent(agent_id)
-        if not agent:
-            logger.error(f"[PUBLISHER] Agent {agent_id} not found in memory store.")
-            return {"success": False, "error": f"Agent {agent_id} not found"}
+        cycle_id = f"cyc-{uuid.uuid4().hex[:12]}"
+        token = set_cycle_id(cycle_id)
+        start_time = time.perf_counter()
 
-        # Step 1: Ensure active window exists or recover it
-        window = self.memory.get_or_create_active_window(agent_id, duration_minutes=settings.publish_window_minutes)
-        window_id = window["window_id"]
-        now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        candidates_discovered = 0
+        candidates_scored = 0
+        top_score = 0.0
+        rejected_below_threshold = 0
+        rejected_duplicate = 0
+        published_post_id: str | None = None
+        llm_provider_used = "Groq" if gemini_breaker.state == CircuitState.OPEN else "Gemini"
 
-        logger.info(f"[WINDOW] Active window {window_id} ({window['started_at']} -> {window['ends_at']}) for agent '{agent['name']}'")
-
-        # Step 2: Check if current window duration has elapsed
-        if window["ends_at"] <= now_utc:
-            logger.info(f"[WINDOW] Window {window_id} has reached ends_at time ({window['ends_at']}). Executing atomic window close evaluation...")
-            return await self.process_window_close(agent_id, window_id)
-
-        # Step 3: Run candidate discovery from live sources
-        recent_hashes = self.memory.get_recent_topic_hashes(agent_id, limit=50)
-        profile = build_persona_profile(agent["name"], agent["domain"])
         try:
-            raw_candidates = await self.discovery.discover_candidate_topics(agent["domain"], recent_hashes)
-        except Exception as exc:
-            logger.warning("[DISCOVERY] Live source failure for %s: %s", agent_id, exc)
+            agent = self.memory.get_agent(agent_id)
+            if not agent:
+                logger.error(f"[PUBLISHER] Agent {agent_id} not found in memory store.")
+                return {"success": False, "error": f"Agent {agent_id} not found"}
+
+            # Step 1: Ensure active window exists or recover it
+            window = self.memory.get_or_create_active_window(agent_id, duration_minutes=settings.publish_window_minutes)
+            window_id = window["window_id"]
+            now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            logger.info(f"[WINDOW] Active window {window_id} ({window['started_at']} -> {window['ends_at']}) for agent '{agent['name']}'")
+
+            # Step 2: Check if current window duration has elapsed
+            if window["ends_at"] <= now_utc:
+                logger.info(f"[WINDOW] Window {window_id} has reached ends_at time ({window['ends_at']}). Executing atomic window close evaluation...")
+                close_res = await self.process_window_close(agent_id, window_id)
+                if close_res.get("action") == "published" and close_res.get("post"):
+                    published_post_id = close_res["post"].get("id")
+                return close_res
+
+            # Step 3: Run candidate discovery from live sources
+            recent_hashes = self.memory.get_recent_topic_hashes(agent_id, limit=50)
+            profile = build_persona_profile(agent["name"], agent["domain"])
+            try:
+                raw_candidates = await self.discovery.discover_candidate_topics(agent["domain"], recent_hashes)
+            except Exception as exc:
+                logger.warning("[DISCOVERY] Live source failure for %s: %s", agent_id, exc)
+                return {
+                    "success": False,
+                    "action": "discovery_failed",
+                    "window_id": window_id,
+                }
+
+            candidates_discovered = len(raw_candidates)
+            logger.info(f"[DISCOVERY] Found {candidates_discovered} candidate topics for window {window_id}")
+
+            # Step 4: Evaluate and persist each candidate
+            evaluated_candidates = []
+            current_leader = self.memory.get_current_leader(window_id, min_score=settings.min_news_score)
+            leader_score = current_leader["score"] if current_leader else 0.0
+            if current_leader and current_leader.get("score"):
+                top_score = max(top_score, float(current_leader["score"]))
+
+            for raw_c in raw_candidates:
+                candidates_scored += 1
+                candidate_id = f"c-{uuid.uuid4().hex[:8]}"
+                eval_result = await self.editorial.evaluate_candidate(
+                    agent_id=agent_id,
+                    persona_profile=profile,
+                    candidate=raw_c,
+                    recent_hashes=recent_hashes
+                )
+
+                score = eval_result["score"]
+                status = eval_result["status"]
+                rejection_reason = eval_result["rejection_reason"]
+                topic_hash = eval_result["topic_hash"]
+                top_score = max(top_score, score)
+
+                if status == "REJECTED":
+                    if rejection_reason and "duplicate" in rejection_reason.lower():
+                        rejected_duplicate += 1
+                    else:
+                        rejected_below_threshold += 1
+
+                # Save candidate record to SQLite
+                saved_c = self.memory.save_candidate(
+                    candidate_id=candidate_id,
+                    agent_id=agent_id,
+                    window_id=window_id,
+                    title=raw_c["title"],
+                    summary=raw_c["summary"],
+                    source_urls=raw_c.get("source_urls", []),
+                    source_quality=raw_c.get("source_quality", "Unknown"),
+                    score=score,
+                    score_breakdown=eval_result["breakdown"],
+                    status=status,
+                    rejection_reason=rejection_reason,
+                    topic_hash=topic_hash
+                )
+                evaluated_candidates.append(saved_c)
+
+                # Step 5: Update Leader if this eligible candidate beats the previous leader
+                if status == "ELIGIBLE" and score > leader_score:
+                    if current_leader:
+                        self.memory.update_candidate_status(current_leader["candidate_id"], "ELIGIBLE")
+                        logger.info(f"[LEADER] New candidate {candidate_id} (Score: {score:.1f}) replaced previous leader {current_leader['candidate_id']} (Score: {leader_score:.1f})")
+                    else:
+                        logger.info(f"[LEADER] Candidate {candidate_id} (Score: {score:.1f}) is initial window leader")
+
+                    self.memory.update_candidate_status(candidate_id, "LEADER")
+                    current_leader = saved_c
+                    leader_score = score
+
             return {
-                "success": False,
-                "action": "discovery_failed",
+                "success": True,
+                "action": "discovery_cycle_completed",
                 "window_id": window_id,
+                "candidates_found": candidates_discovered,
+                "current_leader": current_leader
             }
-        logger.info(f"[DISCOVERY] Found {len(raw_candidates)} candidate topics for window {window_id}")
-
-        # Step 4: Evaluate and persist each candidate
-        evaluated_candidates = []
-        current_leader = self.memory.get_current_leader(window_id, min_score=settings.min_news_score)
-        leader_score = current_leader["score"] if current_leader else 0.0
-
-        for raw_c in raw_candidates:
-            candidate_id = f"c-{uuid.uuid4().hex[:8]}"
-            eval_result = await self.editorial.evaluate_candidate(
-                agent_id=agent_id,
-                persona_profile=profile,
-                candidate=raw_c,
-                recent_hashes=recent_hashes
+        finally:
+            cycle_duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+            logger.info(
+                f"[CYCLE] Cycle {cycle_id} completed for agent {agent_id}: "
+                f"discovered={candidates_discovered} scored={candidates_scored} top_score={top_score} "
+                f"rejected_below_threshold={rejected_below_threshold} rejected_duplicate={rejected_duplicate} "
+                f"published={published_post_id} duration_ms={cycle_duration_ms}",
+                extra={
+                    "cycle_id": cycle_id,
+                    "agent_id": agent_id,
+                    "candidates_discovered": candidates_discovered,
+                    "candidates_scored": candidates_scored,
+                    "top_score": top_score,
+                    "rejected_below_threshold": rejected_below_threshold,
+                    "rejected_duplicate": rejected_duplicate,
+                    "published_post_id": published_post_id,
+                    "llm_provider_used": llm_provider_used,
+                    "cycle_duration_ms": cycle_duration_ms,
+                }
             )
-
-            score = eval_result["score"]
-            status = eval_result["status"]
-            rejection_reason = eval_result["rejection_reason"]
-            topic_hash = eval_result["topic_hash"]
-
-            # Save candidate record to SQLite
-            saved_c = self.memory.save_candidate(
-                candidate_id=candidate_id,
-                agent_id=agent_id,
-                window_id=window_id,
-                title=raw_c["title"],
-                summary=raw_c["summary"],
-                source_urls=raw_c.get("source_urls", []),
-                source_quality=raw_c.get("source_quality", "Unknown"),
-                score=score,
-                score_breakdown=eval_result["breakdown"],
-                status=status,
-                rejection_reason=rejection_reason,
-                topic_hash=topic_hash
-            )
-            evaluated_candidates.append(saved_c)
-
-            # Step 5: Update Leader if this eligible candidate beats the previous leader
-            if status == "ELIGIBLE" and score > leader_score:
-                if current_leader:
-                    self.memory.update_candidate_status(current_leader["candidate_id"], "ELIGIBLE")
-                    logger.info(f"[LEADER] New candidate {candidate_id} (Score: {score:.1f}) replaced previous leader {current_leader['candidate_id']} (Score: {leader_score:.1f})")
-                else:
-                    logger.info(f"[LEADER] Candidate {candidate_id} (Score: {score:.1f}) is initial window leader")
-
-                self.memory.update_candidate_status(candidate_id, "LEADER")
-                current_leader = saved_c
-                leader_score = score
-
-        return {
-            "success": True,
-            "action": "discovery_cycle_completed",
-            "window_id": window_id,
-            "candidates_found": len(raw_candidates),
-            "current_leader": current_leader
-        }
+            cycle_id_ctx.reset(token)
 
     async def process_window_close(self, agent_id: str, window_id: str) -> dict[str, Any]:
         """

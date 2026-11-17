@@ -26,6 +26,15 @@ from utils.duplicate import (
     content_fingerprint,
     normalize_url,
 )
+from utils.logging import (
+    StructuredJsonFormatter,
+    configure_logging,
+    get_cycle_id,
+    get_request_id,
+    redact_secrets,
+    set_cycle_id,
+    set_request_id,
+)
 from utils.rate_limiter import (
     RateLimiterRegistry,
     RateLimitMiddleware,
@@ -59,4 +68,11 @@ __all__ = [
     "is_transient_error",
     "is_valid_public_url",
     "sanitize_source_urls",
+    "StructuredJsonFormatter",
+    "configure_logging",
+    "get_request_id",
+    "set_request_id",
+    "get_cycle_id",
+    "set_cycle_id",
+    "redact_secrets",
 ]
