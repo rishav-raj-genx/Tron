@@ -262,7 +262,7 @@ docker run -d \
 | `PUBLISH_WINDOW_MINUTES` | `45` | Publishing window cycle duration |
 | `MIN_NEWS_SCORE` | `75.0` | Minimum score threshold for publication |
 | `MAX_AGENTS` | `5` | Maximum active agents cap (FIFO eviction) |
-| `ADMIN_API_KEY` | `""` | `X-Admin-Key` header authentication for manual triggers |
+| `ADMIN_API_KEY` | unset (manual triggers disabled) | `X-Admin-Key` authentication for manual triggers |
 
 ---
 

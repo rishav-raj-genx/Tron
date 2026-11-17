@@ -712,7 +712,7 @@ async def trigger_agent_cycle(
 ):
     """Manual cycle trigger endpoint for testing or simulated fast-forwarding."""
     admin_secret = settings.admin_api_key
-    if admin_secret and x_admin_key != admin_secret:
+    if not admin_secret or x_admin_key != admin_secret:
         raise HTTPException(status_code=403, detail="Unauthorized cycle trigger.")
 
     result = await publisher_service.run_discovery_and_evaluation_cycle(agentId)
@@ -731,7 +731,7 @@ async def trigger_window_close(
 ):
     """Manual window close trigger endpoint for testing window evaluation."""
     admin_secret = settings.admin_api_key
-    if admin_secret and x_admin_key != admin_secret:
+    if not admin_secret or x_admin_key != admin_secret:
         raise HTTPException(status_code=403, detail="Unauthorized window close trigger.")
 
     result = await publisher_service.process_window_close(agentId, windowId)
