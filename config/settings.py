@@ -45,7 +45,7 @@ if HAS_PYDANTIC_SETTINGS:
             validation_alias=AliasChoices("PORT", "port")
         )
         api_base_url: str = Field(
-            default="https://echomind-ltwo.onrender.com",
+            default="",
             validation_alias=AliasChoices("ECHOMIND_API_BASE_URL", "API_BASE_URL", "api_base_url")
         )
         max_agents: int = Field(
@@ -77,11 +77,11 @@ if HAS_PYDANTIC_SETTINGS:
             validation_alias=AliasChoices("LLM_FALLBACK_PROVIDER", "llm_fallback_provider")
         )
         database_url: str = Field(
-            default="sqlite:///agent_memory.db",
+            default="sqlite:///./data/tron.db",
             validation_alias=AliasChoices("DATABASE_URL", "database_url")
         )
         agent_db_path: str = Field(
-            default="agent_memory.db",
+            default="./data/tron.db",
             validation_alias=AliasChoices("DATABASE_PATH", "AGENT_DB_PATH", "agent_db_path")
         )
         discovery_interval_minutes: int = Field(
@@ -173,7 +173,7 @@ else:
             self.port = int(os.getenv("PORT", "8080"))
             self.api_base_url = os.getenv(
                 "ECHOMIND_API_BASE_URL",
-                os.getenv("API_BASE_URL", "https://echomind-ltwo.onrender.com")
+                os.getenv("API_BASE_URL", "")
             ).rstrip("/")
             self.max_agents = int(os.getenv("MAX_AGENTS", "5"))
             self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
@@ -182,8 +182,8 @@ else:
             self.groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
             self.llm_primary_provider = os.getenv("LLM_PRIMARY_PROVIDER", "gemini")
             self.llm_fallback_provider = os.getenv("LLM_FALLBACK_PROVIDER", "groq")
-            self.database_url = os.getenv("DATABASE_URL", "sqlite:///agent_memory.db")
-            self.agent_db_path = os.getenv("DATABASE_PATH", os.getenv("AGENT_DB_PATH", "agent_memory.db"))
+            self.database_url = os.getenv("DATABASE_URL", "sqlite:///./data/tron.db")
+            self.agent_db_path = os.getenv("DATABASE_PATH", os.getenv("AGENT_DB_PATH", "./data/tron.db"))
             self.discovery_interval_minutes = int(os.getenv("DISCOVERY_INTERVAL_MINUTES", os.getenv("AGENT_INTERVAL_MINUTES", "45")))
             self.discovery_jitter_seconds = int(os.getenv("DISCOVERY_JITTER_SECONDS", "300"))
             self.publish_window_minutes = int(os.getenv("PUBLISH_WINDOW_MINUTES", "45"))

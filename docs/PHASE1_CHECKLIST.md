@@ -246,7 +246,7 @@
 - **Secret Scan Job (`.github/workflows/ci.yml`):**
   - Executes `gitleaks/gitleaks-action@v2` with `fetch-depth: 0` to scan the full commit history on every push and pull request.
 - **Lint & Offline Test Suite Job (`.github/workflows/ci.yml`):**
-  - Configures Python 3.11 with pip caching, installs `requirements-dev.txt`, runs `ruff check .`, and executes `pytest -v` across all 113 offline tests.
+  - Configures Python 3.11 with uv caching, installs the locked development environment, runs `uv run ruff check .`, and executes `uv run pytest -v` across all 113 offline tests.
 - **Container Build & Smoke Check Job (`.github/workflows/ci.yml`):**
   - Builds the production Docker image (`docker build -t tron-ci:test .`), starts a background test container with dummy test credentials and SQLite data volume, polls `http://127.0.0.1:8080/healthz` until readiness, verifies HTTP 200, and tears down the container cleanly.
 

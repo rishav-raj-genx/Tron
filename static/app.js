@@ -11,7 +11,7 @@
 // 1. Explicit URL parameter: ?api=https://...
 // 2. Explicit window global: window.__API_BASE_URL__
 // 3. Same-origin relative path ("") if running inside browser on host
-// 4. Default fallback: https://echomind-ltwo.onrender.com
+// 4. Default fallback: same-origin API
 const getBaseUrl = () => {
   try {
     const urlParams = new URLSearchParams(window.location.search);
@@ -25,7 +25,7 @@ const getBaseUrl = () => {
   } catch (e) {
     console.warn("[EchoMind] Could not parse URL params:", e);
   }
-  return "https://echomind-ltwo.onrender.com";
+  return "";
 };
 
 const API_BASE_URL = getBaseUrl();
@@ -828,7 +828,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   // 2. Set configured backend label
-  const displayUrl = (API_BASE_URL || window.location.host || "echomind-ltwo.onrender.com")
+  const displayUrl = (API_BASE_URL || window.location.host || "same-origin")
     .replace(/^https?:\/\//, "")
     .replace(/\/$/, "");
   const backendLabel = document.getElementById("backend-url-label");

@@ -663,10 +663,7 @@ async def healthz():
         }
     except Exception as e:
         logger.error(f"[HEALTH] Deep healthz check failed: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail=f"Database health check failed: {e}"
-        )
+        raise HTTPException(status_code=503, detail="Database health check failed.")
 
 
 @app.get("/health", status_code=200)
@@ -689,10 +686,7 @@ async def health_check():
         }
     except Exception as e:
         logger.error(f"[HEALTH] Detailed health check failed: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail=f"Database health check failed: {e}"
-        )
+        raise HTTPException(status_code=503, detail="Database health check failed.")
 
 
 @app.get("/metrics")

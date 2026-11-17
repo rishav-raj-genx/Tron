@@ -36,18 +36,21 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.4"
+          enable-cache: true
 
       - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+        run: uv sync --locked --extra dev
 
       - name: Run Ruff Linter
-        run: ruff check .
+        run: uv run ruff check .
 
       - name: Run Offline Pytest Suite
-        run: pytest -v
+        run: uv run pytest -v
 
   container-smoke:
     name: Container Build & Smoke Check

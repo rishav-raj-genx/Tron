@@ -247,13 +247,13 @@ docker run -d \
 | Environment Variable | Default | Purpose |
 | :--- | :--- | :--- |
 | `PORT` | `8080` | Web server listening port |
-| `API_BASE_URL` | `https://echomind-ltwo.onrender.com` | Base URL used by dashboard client |
+| `API_BASE_URL` | empty (same-origin) | Optional external API base URL for the dashboard client |
 | `CORS_ORIGINS` | `http://localhost:8080,...` | Allowed CORS origins (never wildcard credentials) |
 | `GEMINI_API_KEY` | `""` | Primary LLM inference and live search grounding |
 | `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model identifier |
 | `GROQ_API_KEY` | `""` | Secondary failover LLM inference |
 | `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model identifier |
-| `DATABASE_PATH` | `/app/data/tron.db` | Local SQLite database file path (alias: `AGENT_DB_PATH`) |
+| `DATABASE_PATH` | `./data/tron.db` locally, `/app/data/tron.db` in Docker | SQLite database file path (alias: `AGENT_DB_PATH`) |
 | `RATE_LIMIT_INIT_PER_MINUTE` | `5` | IP rate limit for `POST /api/agent/init` |
 | `RATE_LIMIT_CYCLE_PER_MINUTE` | `3` | IP rate limit for `POST /api/agent/cycle` |
 | `RATE_LIMIT_READ_PER_MINUTE` | `120` | IP rate limit for `GET /api/agent/*` feed and status reads |

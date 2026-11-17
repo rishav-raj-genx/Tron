@@ -451,8 +451,8 @@ class AgentMemoryStore:
                 if cursor_data:
                     c_time, c_id = cursor_data
                     query = """
-                        SELECT id, created_at, text, rationale, sources_json 
-                        FROM feed_posts 
+                        SELECT id, created_at, text, rationale, sources_json
+                        FROM feed_posts
                         WHERE agent_id = ? AND (created_at < ? OR (created_at = ? AND id < ?))
                         ORDER BY created_at DESC, id DESC 
                         LIMIT ?
@@ -460,10 +460,10 @@ class AgentMemoryStore:
                     params: tuple[Any, ...] = (agent_id, c_time, c_time, c_id, fetch_count)
                 else:
                     query = """
-                        SELECT id, created_at, text, rationale, sources_json 
-                        FROM feed_posts 
-                        WHERE agent_id = ? 
-                        ORDER BY created_at DESC, id DESC 
+                        SELECT id, created_at, text, rationale, sources_json
+                        FROM feed_posts
+                        WHERE agent_id = ?
+                        ORDER BY created_at DESC, id DESC
                         LIMIT ?
                     """
                     params = (agent_id, fetch_count)
@@ -471,18 +471,18 @@ class AgentMemoryStore:
                 if cursor_data:
                     c_time, c_id = cursor_data
                     query = """
-                        SELECT id, created_at, text, rationale, sources_json 
-                        FROM feed_posts 
+                        SELECT id, created_at, text, rationale, sources_json
+                        FROM feed_posts
                         WHERE (created_at < ? OR (created_at = ? AND id < ?))
-                        ORDER BY created_at DESC, id DESC 
+                        ORDER BY created_at DESC, id DESC
                         LIMIT ?
                     """
                     params = (c_time, c_time, c_id, fetch_count)
                 else:
                     query = """
-                        SELECT id, created_at, text, rationale, sources_json 
-                        FROM feed_posts 
-                        ORDER BY created_at DESC, id DESC 
+                        SELECT id, created_at, text, rationale, sources_json
+                        FROM feed_posts
+                        ORDER BY created_at DESC, id DESC
                         LIMIT ?
                     """
                     params = (fetch_count,)
