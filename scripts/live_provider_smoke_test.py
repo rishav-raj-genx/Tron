@@ -17,8 +17,8 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from config.settings import settings
-from services.llm import LLMClient, ProviderError
 from services.editorial_engine import EDITORIAL_SYNTHESIS_SCHEMA
+from services.llm import LLMClient, ProviderError
 from utils.api import sanitize_url_credentials
 
 
@@ -31,7 +31,7 @@ async def run_live_smoke_test():
     gemini_key_present = bool(settings.gemini_api_key.strip())
     groq_key_present = bool(settings.groq_api_key.strip())
 
-    print(f"[-] Environment Loaded: .env")
+    print("[-] Environment Loaded: .env")
     print(f"[-] Gemini API Key Configured: {'YES' if gemini_key_present else 'NO'}")
     print(f"[-] Groq API Key Configured:   {'YES' if groq_key_present else 'NO'}")
     print(f"[-] Gemini Model Target:       {settings.gemini_model}")
@@ -95,7 +95,7 @@ async def run_live_smoke_test():
             raise ProviderError("Simulated primary Gemini 503 Service Unavailable")
 
         failover_client._call_gemini_text = mock_failing_gemini
-        
+
         failover_res = await failover_client.generate(
             system="Reply with plain text.",
             user="Test failover response"

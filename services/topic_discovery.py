@@ -9,12 +9,10 @@ IMPORTANT: No static or hardcoded fallback pools. If all live retrieval fails,
 the discovery cycle is skipped cleanly and retried next interval.
 """
 
-import hashlib
-import json
 import logging
 import re
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -106,7 +104,7 @@ class TopicDiscoveryService:
         if not entries:
             entries = [elem for elem in root.iter() if elem.tag.endswith("entry")]
 
-        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         candidates: list[dict[str, Any]] = []
 
         for entry in entries:
@@ -250,7 +248,7 @@ Search results:
                 response_format=schema
             )
             extracted = []
-            now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
             for t in result.get("topics", []):
                 raw_sources = t.get("source_urls", [])

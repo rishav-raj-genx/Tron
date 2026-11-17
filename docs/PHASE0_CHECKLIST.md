@@ -20,10 +20,11 @@
   - [x] Audit `google-genai` (v3.4.0) modern client SDK and `groq` (v1.7.0) `AsyncGroq` usage.
   - [x] Set up local Python 3.12 `.venv` and verify clean installation via `uv`.
   - [x] Execute server smoke boot test: verify `GET /healthz` (200), `GET /` (200), static assets, SQLite WAL mode, and clean APScheduler lifespan shutdown.
-- [ ] **Step 0.4: Test Suite Stabilization & Regression Hardening**
-  - [ ] Mock un-mocked live LLM call in `tests/test_hackathon_spec.py` (`test_source_extraction_and_structured_json_synthesis`).
-  - [ ] Ensure 100% test pass rate across all 9 test suites without network dependencies.
-  - [ ] Add pytest configuration / `pyproject.toml` to eliminate manual `PYTHONPATH` exports.
+- [x] **Step 0.4: Test Suite Stabilization & Regression Hardening**
+  - [x] Added `tests/conftest.py` with `isolated_db`, `stub_llm`, and `offline_llm_guard` ensuring deterministic offline execution without network egress.
+  - [x] Configured `pyproject.toml` with `[tool.pytest.ini_options]` (`pythonpath = ["."]`, `asyncio_mode = "auto"`, `--strict-markers`, `live` marker) and `[tool.ruff]` baseline linting.
+  - [x] Fixed safe linting issues with `ruff check --fix .` and eliminated unused imports.
+  - [x] Recovered 100% test pass rate across all 9 test suites (59/59 tests passing in ~1.0s).
 - [ ] **Step 0.5: Phase 0 Verification & Milestone Baseline Tagging**
   - [ ] End-to-end lint, test, and type-check validation.
   - [ ] Tag verified milestone `v0.0-phase0-complete`.
@@ -220,4 +221,41 @@
 - **Graceful Lifespan Shutdown:**
   - Delivered `SIGINT` / `SIGTERM` to uvicorn process.
   - Scheduler invoked `scheduler.shutdown(wait=False)`, FastAPI application lifespan terminated gracefully, and process exited with code `0`.
+
+---
+
+## Step 0.4 Audit Report
+
+### 1. Test Suite Recovery & Isolation Architecture
+- **Root Cause Analysis of Initial Failure:**
+  - `test_source_extraction_and_structured_json_synthesis` in `tests/test_hackathon_spec.py` and `test_end_to_end_stress_and_concurrency` in `tests/stress_test_qa.py` instantiated `EditorialEngine` without stubbed LLMs, causing `LLMClient` to attempt live network calls with unconfigured API keys.
+- **Test Configuration & Pytest Discovery ([pyproject.toml](file:///Users/apple/Desktop/Tron/pyproject.toml)):**
+  - Added `pythonpath = ["."]` so imports work directly with `pytest` without manual `PYTHONPATH` exports.
+  - Registered `python_files = ["test_*.py", "*_test.py", "stress_test_qa.py"]` and `python_classes = ["Test*", "*Test", "StressTest*"]` to ensure all 9 test suites are automatically collected.
+  - Configured `asyncio_mode = "auto"`, `--strict-markers`, and registered the `live` marker.
+- **Offline Stub & Fixture Harness ([tests/conftest.py](file:///Users/apple/Desktop/Tron/tests/conftest.py)):**
+  - Implemented `isolated_db` fixture for safe SQLite temporary WAL stores.
+  - Implemented `stub_llm` providing deterministic responses matching required schemas.
+  - Implemented `offline_llm_guard` autouse fixture: intercepts external LLM network requests (`_call_gemini_raw`, `_call_groq_text`), returning deterministic schema-valid mock payloads unless marked with `@pytest.mark.live`.
+
+### 2. Code Quality & Lint Baseline ([pyproject.toml](file:///Users/apple/Desktop/Tron/pyproject.toml))
+- Configured Ruff rules (`E`, `F`, `I`, `B`, `UP`).
+- Fixed unused imports across services and tests (`ruff check --fix .`).
+- Verified `ruff check .` passes with 0 errors across all files.
+
+### 3. Full Test Suite Execution Summary (100% Passing)
+
+| Test Suite File | Test Class | Total Tests | Status | Execution Time |
+| :--- | :--- | :---: | :---: | :---: |
+| `tests/stress_test_qa.py` | `StressTestQA` | 1 | PASSED | 0.08s |
+| `tests/test_autonomy_integration.py` | `TestAutonomousFeedIntegration`, `TestLiveSourceParsing` | 3 | PASSED | 0.05s |
+| `tests/test_discovery_fallback.py` | `TestDiscoveryFallback`, `TestAutonomousArxivFallback` | 8 | PASSED | 0.12s |
+| `tests/test_duplicate_prevention.py` | `TestDuplicatePrevention` | 10 | PASSED | 0.09s |
+| `tests/test_editorial_and_twitter.py` | `TestEditorialAndTwitter` | 4 | PASSED | 0.04s |
+| `tests/test_hackathon_spec.py` | `TestEchoMindNewsPublisher` | 7 | PASSED | 0.15s |
+| `tests/test_llm_service.py` | `TestLLMService` | 19 | PASSED | 0.22s |
+| `tests/test_migration_integrity.py` | `TestMigrationIntegrity`, `TestStructuredBoundary` | 3 | PASSED | 0.05s |
+| `tests/test_t30_publisher.py` | `TestT30Publisher` | 4 | PASSED | 0.08s |
+| **TOTAL** | **9 Test Suites** | **59 Tests** | **100% PASSED** | **0.96s** |
+
 

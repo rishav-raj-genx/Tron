@@ -25,9 +25,9 @@ import re
 from typing import Any
 
 from config.settings import settings
-from services.llm import LLMClient, ProviderError
+from services.llm import LLMClient
 from services.memory import AgentMemoryStore
-from utils.duplicate import DuplicateStatus, check_deterministic_duplicate, normalize_url
+from utils.duplicate import DuplicateStatus, check_deterministic_duplicate
 
 logger = logging.getLogger(__name__)
 

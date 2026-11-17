@@ -27,7 +27,7 @@ import os
 import re
 import tempfile
 import unittest
-from datetime import datetime, timezone
+
 try:
     from fastapi.testclient import TestClient
     HAS_TESTCLIENT = True
@@ -37,12 +37,10 @@ except ImportError:
         def __init__(self, app): pass
 
 from config.persona_engine import build_persona_profile
-from config.settings import Settings, settings
 from main import app
 from services.autonomous_publisher import AutonomousPublisherService
 from services.editorial_engine import EditorialEngine
-from services.llm import LLMClient
-from services.memory import AgentMemoryStore, memory_store
+from services.memory import AgentMemoryStore
 
 client = TestClient(app)
 ISO_8601_REGEX = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"

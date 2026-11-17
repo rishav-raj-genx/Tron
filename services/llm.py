@@ -52,7 +52,6 @@ except ImportError:
     HAS_GENAI_SDK = False
 
 try:
-    import groq
     from groq import AsyncGroq
     HAS_GROQ_SDK = True
 except ImportError:
@@ -108,7 +107,7 @@ def _clean_and_parse_json(text: str) -> dict[str, Any]:
         clean = clean.split("```json", 1)[1].split("```", 1)[0].strip()
     elif "```" in clean:
         clean = clean.split("```", 1)[1].split("```", 1)[0].strip()
-    
+
     # Match outermost JSON object if extra text exists
     match = re.search(r"(\{.*\})", clean, re.DOTALL)
     if match:

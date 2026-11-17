@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tron-autonoma"
+version = "3.0.0"
+description = "Portfolio-grade FastAPI + SQLite (WAL) + APScheduler autonomous news agent framework"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.109.0,<1.0.0",
+    "uvicorn>=0.27.0,<1.0.0",
+    "apscheduler>=3.10.0,<4.0.0",
+    "httpx>=0.26.0,<1.0.0",
+    "pydantic>=2.5.0,<3.0.0",
+    "pydantic-settings>=2.1.0,<3.0.0",
+    "python-dotenv>=1.0.0,<2.0.0",
+    "google-genai>=1.0.0,<4.0.0",
+    "groq>=0.4.0,<2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0,<10.0.0",
+    "pytest-asyncio>=0.23.0,<1.0.0",
+    "ruff>=0.8.0,<1.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+python_files = ["test_*.py", "*_test.py", "stress_test_qa.py"]
+python_classes = ["Test*", "*Test", "StressTest*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers"
+markers = [
+    "live: tests that make live outbound API or network calls (skipped in offline test runs)",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # do not perform function calls in argument defaults (FastAPI Depends/Query/Header)
+    "E402",  # module level import not at top of file (runtime fallback imports)
+    "E701",  # multiple statements on one line (fallback classes)
+    "B904",  # raise ... from err in HTTP exceptions
+    "W291",  # trailing whitespace in legacy SQL strings
+    "UP042", # str, Enum compatibility
+    "F841",  # unused local variables in test assignments
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["config", "services", "tools", "utils"]

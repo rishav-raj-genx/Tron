@@ -7,8 +7,8 @@ Discovers tools from tools/shared/ (such as web_search).
 import importlib
 import logging
 import pkgutil
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 logger = logging.getLogger(__name__)
 

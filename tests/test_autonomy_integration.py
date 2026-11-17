@@ -1,10 +1,9 @@
 """Deterministic autonomy tests for the hackathon feed contract."""
 
-import asyncio
 import os
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from services.autonomous_publisher import AutonomousPublisherService
 from services.memory import AgentMemoryStore
@@ -66,7 +65,7 @@ class TestAutonomousFeedIntegration(unittest.IsolatedAsyncioTestCase):
         with self.memory._get_connection() as conn:
             conn.execute(
                 "UPDATE publishing_windows SET ends_at = ? WHERE window_id = ?",
-                ((datetime.now(timezone.utc) - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ"), window["window_id"]),
+                ((datetime.now(UTC) - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ"), window["window_id"]),
             )
             conn.commit()
 

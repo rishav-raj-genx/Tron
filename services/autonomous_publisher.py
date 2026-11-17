@@ -24,7 +24,7 @@ Orchestrates the discovery loop and quality-driven publishing window:
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from config.persona_engine import build_persona_profile
@@ -87,7 +87,7 @@ class AutonomousPublisherService:
         # Step 1: Ensure active window exists or recover it
         window = self.memory.get_or_create_active_window(agent_id, duration_minutes=settings.publish_window_minutes)
         window_id = window["window_id"]
-        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         logger.info(f"[WINDOW] Active window {window_id} ({window['started_at']} -> {window['ends_at']}) for agent '{agent['name']}'")
 

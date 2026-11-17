@@ -17,10 +17,11 @@ import logging
 import os
 import sqlite3
 import uuid
+from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -177,11 +178,11 @@ class AgentMemoryStore:
         If existing agents count >= max_agents (default 5), atomically deletes the oldest agent
         and all owned dependent records (windows, candidates, feed posts, decisions, x records).
         """
-        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         with self._get_connection() as conn:
             # Query existing agents ordered strictly by persisted creation timestamp ASC
             rows = conn.execute("SELECT agent_id, name, created_at FROM agents ORDER BY created_at ASC").fetchall()
-            
+
             # Enforce 5-agent limit: rotate out oldest agent if at or above capacity
             if len(rows) >= max_agents:
                 excess_count = (len(rows) - max_agents) + 1
@@ -329,7 +330,7 @@ class AgentMemoryStore:
             post_id = f"p-{uuid.uuid4().hex[:8]}"
 
         if not created_at:
-            created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            created_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         if not topic_hash:
             topic_hash = self.compute_topic_hash(text)
@@ -472,7 +473,7 @@ class AgentMemoryStore:
         reason: str
     ) -> None:
         """Log an explicit editorial decision (ACCEPTED or REJECTED) with reason."""
-        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         with self._get_connection() as conn:
             conn.execute(
                 """
@@ -522,7 +523,7 @@ class AgentMemoryStore:
             duration_minutes = settings.publish_window_minutes
 
         window_id = f"win-{uuid.uuid4().hex[:8]}"
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         started_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
         ends_at = (now + timedelta(minutes=duration_minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -549,7 +550,7 @@ class AgentMemoryStore:
 
     def get_active_window(self, agent_id: str) -> dict[str, Any] | None:
         """Get current OPEN window if one exists and has not yet expired."""
-        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         with self._get_connection() as conn:
             row = conn.execute(
                 """
@@ -591,7 +592,7 @@ class AgentMemoryStore:
 
         # If previous window exists but expired without formal closure, return it so it can be evaluated
         latest = self.get_latest_window(agent_id)
-        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         if latest and latest["status"] == "OPEN" and latest["ends_at"] <= now_utc:
             return latest
 
@@ -629,7 +630,7 @@ class AgentMemoryStore:
         post_id: str | None = None
     ) -> None:
         """Close a publishing window with final status."""
-        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         with self._get_connection() as conn:
             conn.execute(
                 """
@@ -670,7 +671,7 @@ class AgentMemoryStore:
     ) -> dict[str, Any]:
         """Persist an evaluated news candidate with multi-factor score and breakdown."""
         if not discovered_at:
-            discovered_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            discovered_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         if not topic_hash:
             topic_hash = self.compute_topic_hash(title)
 
@@ -814,7 +815,7 @@ class AgentMemoryStore:
         window_id: str
     ) -> None:
         """Persist X publication record for restart-durable duplicate prevention."""
-        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         with self._get_connection() as conn:
             conn.execute(
                 """

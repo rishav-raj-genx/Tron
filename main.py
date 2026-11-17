@@ -13,7 +13,6 @@ FastAPI application providing:
 
 import asyncio
 import logging
-import os
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,7 +27,7 @@ except ImportError:
         def add_job(self, *args, **kwargs): pass
 
 try:
-    from fastapi import FastAPI, HTTPException, Header, Query, Request
+    from fastapi import FastAPI, Header, HTTPException, Query, Request
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles

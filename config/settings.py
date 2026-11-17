@@ -12,7 +12,6 @@ Loads configuration from environment variables and .env file with resilient defa
 
 import logging
 import os
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
