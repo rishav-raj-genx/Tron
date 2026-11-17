@@ -13,6 +13,7 @@ FastAPI application providing:
 
 import asyncio
 import logging
+import re
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,10 +29,12 @@ except ImportError:
 
 try:
     from fastapi import FastAPI, Header, HTTPException, Query, Request
+    from fastapi import Path as PathParam
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel, Field
+    from pydantic import BaseModel, Field, field_validator
+    from starlette.responses import JSONResponse
     HAS_FASTAPI = True
 except ImportError:
     HAS_FASTAPI = False
@@ -51,16 +54,20 @@ except ImportError:
     def Field(*args, **kwargs): return None
     def Query(*args, **kwargs): return None
     def Header(*args, **kwargs): return None
+    def PathParam(*args, **kwargs): return None
+    def field_validator(*args, **kwargs): return lambda f: f
     class HTTPException(Exception): pass
     class Request: pass
     class CORSMiddleware: pass
     class FileResponse: pass
     class StaticFiles:
         def __init__(self, *args, **kwargs): pass
+    class JSONResponse: pass
 
 from config.settings import settings
 from services.autonomous_publisher import publisher_service
 from services.memory import memory_store
+from utils.rate_limiter import RateLimitMiddleware, rate_limiter_registry
 
 # Configure logging
 logging.basicConfig(
@@ -72,11 +79,55 @@ logger = logging.getLogger(__name__)
 # Global background scheduler
 scheduler = AsyncIOScheduler()
 
+# Validation regex patterns
+PERSONA_NAME_REGEX = re.compile(r"^[a-zA-Z0-9 -]+$")
+PERSONA_DOMAIN_REGEX = re.compile(r"^[a-zA-Z0-9 &/\(\),\.\-]+$")
+CONTROL_CHARS_REGEX = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+AGENT_ID_REGEX = r"^[a-zA-Z0-9_\-]+$"
+
+
+def validate_persona_name(v: str | None) -> str | None:
+    """Validate persona name against length and character constraints."""
+    if v is None:
+        return None
+    s = v.strip()
+    if len(s) < 2 or len(s) > 40:
+        raise ValueError("persona name must be between 2 and 40 characters")
+    if not PERSONA_NAME_REGEX.match(s):
+        raise ValueError("persona name must contain only alphanumeric characters, spaces, and hyphens")
+    return s
+
+
+def validate_persona_domain(v: str | None) -> str | None:
+    """Validate persona domain against length and prompt-injection delimiter constraints."""
+    if v is None:
+        return None
+    s = v.strip()
+    if len(s) < 3 or len(s) > 80:
+        raise ValueError("persona domain must be between 3 and 80 characters")
+    if any(c in s for c in ("\n", "\r", "\t")):
+        raise ValueError("persona domain must not contain newlines or control characters")
+    if CONTROL_CHARS_REGEX.search(s):
+        raise ValueError("persona domain must not contain control characters")
+    if not PERSONA_DOMAIN_REGEX.match(s):
+        raise ValueError("persona domain contains invalid characters or delimiters")
+    return s
+
 
 # Request / Response Schemas for Hackathon API Specification
 class PersonaInitPayload(BaseModel):
     name: str | None = Field(None, description="Human-readable agent persona identity (e.g. 'Ada')")
     domain: str | None = Field(None, description="Technical domain specialization (e.g. 'AI Security')")
+
+    @field_validator("name", mode="after")
+    @classmethod
+    def check_name(cls, v: str | None) -> str | None:
+        return validate_persona_name(v)
+
+    @field_validator("domain", mode="after")
+    @classmethod
+    def check_domain(cls, v: str | None) -> str | None:
+        return validate_persona_domain(v)
 
 
 class AgentInitRequest(BaseModel):
@@ -84,6 +135,16 @@ class AgentInitRequest(BaseModel):
     name: str | None = None
     domain: str | None = None
     agent_name: str | None = None
+
+    @field_validator("name", "agent_name", mode="after")
+    @classmethod
+    def check_name_fields(cls, v: str | None) -> str | None:
+        return validate_persona_name(v)
+
+    @field_validator("domain", mode="after")
+    @classmethod
+    def check_domain_fields(cls, v: str | None) -> str | None:
+        return validate_persona_domain(v)
 
 
 class AgentInitResponse(BaseModel):
@@ -192,6 +253,75 @@ async def lifespan(app: FastAPI):
     logger.info("[APP] Application shutdown complete.")
 
 
+class RequestSizeLimitMiddleware:
+    """ASGI middleware rejecting oversized request bodies (> 32KB) on mutating endpoints."""
+
+    def __init__(self, app: Any, max_bytes: int = 32768) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        method = scope.get("method", "GET").upper()
+        if method in {"POST", "PUT", "PATCH", "DELETE"}:
+            for name, value in scope.get("headers", []):
+                if name.lower() == b"content-length":
+                    try:
+                        content_length = int(value.decode("latin1"))
+                        if content_length > self.max_bytes:
+                            response = JSONResponse(
+                                status_code=413,
+                                content={
+                                    "detail": f"Payload Too Large: Request body exceeds maximum allowed size of {self.max_bytes} bytes."
+                                },
+                            )
+                            await response(scope, receive, send)
+                            return
+                    except (ValueError, TypeError):
+                        pass
+                    break
+
+        await self.app(scope, receive, send)
+
+
+class SecurityHeadersMiddleware:
+    """ASGI middleware injecting hardened HTTP security headers on all responses."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+        self.security_headers = [
+            (b"x-content-type-options", b"nosniff"),
+            (b"x-frame-options", b"DENY"),
+            (b"referrer-policy", b"strict-origin-when-cross-origin"),
+            (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
+            (
+                b"content-security-policy",
+                b"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https:; frame-ancestors 'none';",
+            ),
+        ]
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message: dict[str, Any]) -> None:
+            if message["type"] == "http.response.start":
+                existing = message.get("headers", [])
+                existing_names = {k.lower() for k, _ in existing}
+                new_headers = list(existing)
+                for k, v in self.security_headers:
+                    if k not in existing_names:
+                        new_headers.append((k, v))
+                message["headers"] = new_headers
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
 app = FastAPI(
     title="Autonomous AI & Technology Persona News Publisher",
     description="Quality-driven autonomous news publisher with ~35-min discovery loops (±5-min jitter) and configuration-driven publishing windows",
@@ -199,14 +329,22 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for browser frontend clients
+# Security and traffic protection middleware stack (applied in reverse execution order)
+app.add_middleware(RequestSizeLimitMiddleware, max_bytes=32768)
+app.add_middleware(RateLimitMiddleware, registry=rate_limiter_registry)
+
+cors_allow_credentials = True
+if "*" in settings.cors_origins:
+    cors_allow_credentials = False
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=settings.cors_origins,
+    allow_credentials=cors_allow_credentials,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Mount static web frontend assets
 static_dir = Path(__file__).parent / "static"
@@ -229,7 +367,11 @@ async def serve_dashboard():
 # ============================================================================
 
 @app.get("/api/agents", response_model=AgentListResponse, status_code=200)
-async def list_all_agents(activeAgentId: str | None = Query(None, description="Currently active dashboard agent")):
+async def list_all_agents(
+    activeAgentId: str | None = Query(
+        None, max_length=64, pattern=AGENT_ID_REGEX, description="Currently active dashboard agent"
+    )
+):
     """
     List all active autonomous agents (up to MAX_AGENTS=5) with their real-time
     publishing window, candidate count, current leader status, and configured window duration.
@@ -252,14 +394,26 @@ async def list_all_agents(activeAgentId: str | None = Query(None, description="C
 async def init_agent(payload: AgentInitRequest):
     """
     Initialize an autonomous persona with a human-readable name and domain.
-    Enforces server-side MAX_AGENTS=5 FIFO rotation: if 5 agents already exist,
-    atomically evicts the oldest agent and all owned records.
+    Enforces server-side MAX_AGENTS capacity ceiling cleanly: if 5 agents already exist,
+    returns an explicit 409 Conflict.
     Generates a unique machine identifier (agentId), registers in SQLite memory,
     creates the initial publishing window, and triggers background discovery.
 
     Strictly returns: {"agentId": "abc-123"}
     """
     try:
+        # Enforce MAX_AGENTS ceiling cleanly with 409 Conflict
+        existing_agents = memory_store.list_agents()
+        if len(existing_agents) >= settings.max_agents:
+            logger.warning(
+                f"[API] Agent initialization rejected: MAX_AGENTS ceiling reached "
+                f"({len(existing_agents)}/{settings.max_agents})."
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=f"Agent capacity ceiling reached ({settings.max_agents}/{settings.max_agents}). Delete an inactive agent before registering a new one.",
+            )
+
         persona_name = ""
         persona_domain = ""
         if payload.persona:
@@ -278,7 +432,7 @@ async def init_agent(payload: AgentInitRequest):
         # Generate unique machine agentId (e.g. agent-8a1b2c3d)
         agent_id = f"agent-{uuid.uuid4().hex[:8]}"
 
-        # Register in SQLite memory store with atomic FIFO 5-agent rotation
+        # Register in SQLite memory store
         memory_store.register_agent(agent_id, persona_name, persona_domain, max_agents=settings.max_agents)
 
         # Create initial publishing window (duration driven by settings.publish_window_minutes)
@@ -298,7 +452,11 @@ async def init_agent(payload: AgentInitRequest):
 
 
 @app.delete("/api/agent/{agent_id}", status_code=200)
-async def delete_single_agent(agent_id: str):
+async def delete_single_agent(
+    agent_id: str = PathParam(
+        ..., min_length=1, max_length=64, pattern=AGENT_ID_REGEX, description="Unique agent identifier"
+    )
+):
     """Explicitly remove an agent and its owned data."""
     try:
         deleted = memory_store.delete_agent(agent_id.strip())
@@ -315,7 +473,11 @@ async def delete_single_agent(agent_id: str):
 @app.get("/api/agent/feed", response_model=FeedResponse, status_code=200)
 @app.get("/api/feed", response_model=FeedResponse, status_code=200, include_in_schema=False)
 @app.get("/feed", response_model=FeedResponse, status_code=200, include_in_schema=False)
-async def get_agent_feed(agentId: str | None = Query(None, description="The unique agent identifier returned during initialization")):
+async def get_agent_feed(
+    agentId: str | None = Query(
+        None, max_length=64, pattern=AGENT_ID_REGEX, description="The unique agent identifier returned during initialization"
+    )
+):
     """
     Get the published feed for a given agent (or all published posts if agentId not provided).
 
@@ -338,7 +500,11 @@ async def get_agent_feed(agentId: str | None = Query(None, description="The uniq
 
 
 @app.get("/api/agent/status", response_model=AgentStatusResponse, status_code=200)
-async def get_agent_status(agentId: str = Query(..., description="The unique agent identifier")):
+async def get_agent_status(
+    agentId: str = Query(
+        ..., min_length=1, max_length=64, pattern=AGENT_ID_REGEX, description="The unique agent identifier"
+    )
+):
     """
     Get the real-time status of an agent including current window, candidate count,
     current leader story, and last publication status.
@@ -435,7 +601,9 @@ async def metrics():
 
 @app.post("/api/agent/cycle")
 async def trigger_agent_cycle(
-    agentId: str = Query(..., description="Agent ID to trigger immediately"),
+    agentId: str = Query(
+        ..., min_length=1, max_length=64, pattern=AGENT_ID_REGEX, description="Agent ID to trigger immediately"
+    ),
     x_admin_key: str | None = Header(None, alias="X-Admin-Key")
 ):
     """Manual cycle trigger endpoint for testing or simulated fast-forwarding."""
@@ -449,8 +617,12 @@ async def trigger_agent_cycle(
 
 @app.post("/api/agent/close-window")
 async def trigger_window_close(
-    agentId: str = Query(..., description="Agent ID"),
-    windowId: str = Query(..., description="Window ID to close and evaluate"),
+    agentId: str = Query(
+        ..., min_length=1, max_length=64, pattern=AGENT_ID_REGEX, description="Agent ID"
+    ),
+    windowId: str = Query(
+        ..., min_length=1, max_length=64, pattern=AGENT_ID_REGEX, description="Window ID to close and evaluate"
+    ),
     x_admin_key: str | None = Header(None, alias="X-Admin-Key")
 ):
     """Manual window close trigger endpoint for testing window evaluation."""

@@ -18,7 +18,8 @@ from unittest.mock import patch
 import pytest
 
 from config.settings import settings
-from services.memory import AgentMemoryStore
+from services.memory import AgentMemoryStore, memory_store
+from utils.rate_limiter import rate_limiter_registry
 
 
 class DeterministicStubLLM:
@@ -80,6 +81,22 @@ class DeterministicStubLLM:
 def stub_llm() -> DeterministicStubLLM:
     """Fixture providing a deterministic stub LLM client."""
     return DeterministicStubLLM()
+
+
+@pytest.fixture(autouse=True)
+def reset_test_state() -> Generator[None, None, None]:
+    """Autouse fixture ensuring clean global memory store and fresh rate limiters for every test."""
+    rate_limiter_registry.reset_all()
+    with memory_store._get_connection() as conn:
+        conn.execute("DELETE FROM publishing_windows")
+        conn.execute("DELETE FROM news_candidates")
+        conn.execute("DELETE FROM feed_posts")
+        conn.execute("DELETE FROM editorial_decisions")
+        conn.execute("DELETE FROM x_publication_records")
+        conn.execute("DELETE FROM agents")
+        conn.commit()
+    yield
+    rate_limiter_registry.reset_all()
 
 
 @pytest.fixture

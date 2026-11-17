@@ -104,6 +104,35 @@ if HAS_PYDANTIC_SETTINGS:
             default="",
             validation_alias=AliasChoices("ADMIN_API_KEY", "admin_api_key")
         )
+        cors_origins: list[str] = Field(
+            default_factory=lambda: [
+                "http://localhost:8080",
+                "http://127.0.0.1:8080",
+                "http://localhost:3000",
+                "http://127.0.0.1:3000",
+            ],
+            validation_alias=AliasChoices("CORS_ORIGINS", "cors_origins")
+        )
+
+        @field_validator("cors_origins", mode="before")
+        @classmethod
+        def parse_cors_origins(cls, v: object) -> list[str]:
+            if isinstance(v, str):
+                s = v.strip()
+                if not s:
+                    return ["http://localhost:8080", "http://127.0.0.1:8080"]
+                if s.startswith("[") and s.endswith("]"):
+                    import json
+                    try:
+                        parsed = json.loads(s)
+                        if isinstance(parsed, list):
+                            return [str(item).strip() for item in parsed if item]
+                    except Exception:
+                        pass
+                return [item.strip() for item in s.split(",") if item.strip()]
+            elif isinstance(v, (list, tuple, set)):
+                return [str(item).strip() for item in v if item]
+            return ["http://localhost:8080", "http://127.0.0.1:8080"]
 
         @field_validator("api_base_url", mode="after")
         @classmethod
@@ -160,6 +189,18 @@ else:
             self.publish_window_minutes = int(os.getenv("PUBLISH_WINDOW_MINUTES", "45"))
             self.min_news_score = float(os.getenv("MIN_NEWS_SCORE", "75.0"))
             self.admin_api_key = os.getenv("ADMIN_API_KEY", "")
+            cors_env = os.getenv(
+                "CORS_ORIGINS",
+                "http://localhost:8080,http://127.0.0.1:8080,http://localhost:3000,http://127.0.0.1:3000",
+            ).strip()
+            if cors_env.startswith("[") and cors_env.endswith("]"):
+                import json
+                try:
+                    self.cors_origins = json.loads(cors_env)
+                except Exception:
+                    self.cors_origins = [c.strip() for c in cors_env.split(",") if c.strip()]
+            else:
+                self.cors_origins = [c.strip() for c in cors_env.split(",") if c.strip()]
 
         def validate_api_keys(self) -> tuple[bool, list[str]]:
             diagnostics: list[str] = []

@@ -18,6 +18,13 @@ from utils.duplicate import (
     content_fingerprint,
     normalize_url,
 )
+from utils.rate_limiter import (
+    RateLimiterRegistry,
+    RateLimitMiddleware,
+    SlidingWindowRateLimiter,
+    extract_client_ip,
+    rate_limiter_registry,
+)
 
 __all__ = [
     "GEMINI_BASE_URL",
@@ -30,4 +37,9 @@ __all__ = [
     "canonical_title",
     "content_fingerprint",
     "check_deterministic_duplicate",
+    "SlidingWindowRateLimiter",
+    "RateLimiterRegistry",
+    "rate_limiter_registry",
+    "RateLimitMiddleware",
+    "extract_client_ip",
 ]
