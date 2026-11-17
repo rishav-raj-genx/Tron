@@ -8,10 +8,12 @@
   - [x] Map all mounted FastAPI endpoints in `main.py` (methods, paths, query/body schemas).
   - [x] Document LLM provider/SDK wiring (`google-genai`, `groq`, OpenRouter discrepancy in docs).
   - [x] Triage legacy assets: Remove unreferenced `tools/legacy/` and `AI_INSTRUCTIONS.md` from root.
-- [ ] **Step 0.2: Runtime Environment, Dependency & Secret Sanitization Gate**
-  - [ ] Standardize Python runtime environment using `uv`.
-  - [ ] Reconcile `requirements.txt` vs installed dependencies (`pytest`, `uvicorn`, etc.).
-  - [ ] Verify secret sanitization across all logging outputs and ensure `.env` handling is safe.
+- [x] **Step 0.2: Secret Hygiene, .gitignore Hardening & Environment Configuration Reconciliation**
+  - [x] Scan working tree and commit history for exposed API keys, tokens, or committed `.env` files.
+  - [x] Harden `.gitignore` against environment files (`.env`, `.env.*`), SQLite databases (`*.db*`, `*.sqlite*`), caches, and OS artifacts.
+  - [x] Reconcile configuration models using `pydantic-settings` with `AliasChoices`, defaults, and `extra="ignore"`.
+  - [x] Add actionable startup validation via `settings.validate_api_keys()` for graceful missing-key reporting.
+  - [x] Create comprehensive `.env.example` with defaults, comments, and documented environment variables.
 - [ ] **Step 0.3: Architectural & LLM Provider Realignment**
   - [ ] Clean up obsolete OpenRouter and X/Twitter references across `docs/` and `README.md`.
   - [ ] Align documentation with active Gemini Primary + Groq Fallback architecture.
@@ -137,3 +139,52 @@
    - `utils/api.py` and `utils/duplicate.py` are actively imported across `services/llm.py`, `services/editorial_engine.py`, `services/topic_discovery.py`, and test suites. Fully preserved and validated.
 4. **Test Suite Baseline**:
    - 57 passing tests, 1 failing test (`tests/test_hackathon_spec.py::TestEchoMindNewsPublisher::test_source_extraction_and_structured_json_synthesis`) due to an un-mocked LLM call attempting live network egress. Flagged for resolution in Step 0.4.
+
+---
+
+## Step 0.2 Audit Report
+
+### 1. Secret & Repository Hygiene Audit
+- **Commit History & Tree Scan:**
+  - Scanned full git history and working tree for regex patterns of API keys (`AIza[0-9A-Za-z_-]{35}`, `gsk_[0-9A-Za-z]{20,}`, `sk-[0-9A-Za-z]{20,}`).
+  - Zero real secrets found in commit history or tracked files. All historical occurrences of `sk-` were placeholder documentation snippets in `docs/` (`OPENROUTER_API_KEY=sk-or-v1-...`).
+  - Verified no `.env` or `.env.*` files were ever committed to git history.
+  - Verified zero SQLite database files (`*.db*`, `*.sqlite*`) exist in git index.
+
+### 2. `.gitignore` Hardening
+- Strengthened `.gitignore` to explicitly ignore:
+  - Environments: `.venv/`, `venv/`, `env/`, `ENV/`
+  - Byte-compiled & cache artifacts: `__pycache__/`, `*.py[cod]`, `*$py.class`, `.pytest_cache/`, `.ruff_cache/`, `.mypy_cache/`
+  - Secrets: `.env`, `.env.*`, with explicit inclusion for `!.env.example`
+  - Databases: `*.db`, `*.db-wal`, `*.db-shm`, `*.sqlite`, `*.sqlite3`
+  - OS files: `.DS_Store`, `**/.DS_Store`, `Thumbs.db`
+- Tested and verified via `git check-ignore -v`.
+
+### 3. Reconciled Environment Variables Matrix
+
+| Environment Variable | Alias / Fallback | Type | Default Value | Usage Scope | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `PORT` | `port` | `int` | `8080` | `main.py` entrypoint | Active |
+| `API_BASE_URL` | `ECHOMIND_API_BASE_URL` | `str` | `"https://echomind-ltwo.onrender.com"` | Frontend dashboard & API link | Active |
+| `MAX_AGENTS` | `max_agents` | `int` | `5` | `main.py`, `services/memory.py` | Active |
+| `GEMINI_API_KEY` | `gemini_api_key` | `str` | `""` | `services/llm.py`, `tools/shared/web_search.py` | Active (Primary) |
+| `GEMINI_MODEL` | `gemini_model` | `str` | `"gemini-2.0-flash"` | `services/llm.py`, `config/models.py` | Active |
+| `GROQ_API_KEY` | `groq_api_key` | `str` | `""` | `services/llm.py` | Active (Fallback) |
+| `GROQ_MODEL` | `groq_model` | `str` | `"llama-3.3-70b-versatile"` | `services/llm.py`, `config/models.py` | Active |
+| `LLM_PRIMARY_PROVIDER` | `llm_primary_provider` | `str` | `"gemini"` | Provider routing | Active |
+| `LLM_FALLBACK_PROVIDER` | `llm_fallback_provider` | `str` | `"groq"` | Failover routing | Active |
+| `DATABASE_URL` | `database_url` | `str` | `"sqlite:///agent_memory.db"` | Database connection string | Active |
+| `AGENT_DB_PATH` | `agent_db_path` | `str` | `"agent_memory.db"` | SQLite file path | Active |
+| `DISCOVERY_INTERVAL_MINUTES` | `AGENT_INTERVAL_MINUTES` | `int` | `45` | Background discovery scheduler | Active |
+| `DISCOVERY_JITTER_SECONDS` | `discovery_jitter_seconds` | `int` | `300` | Discovery jitter window (±5 min) | Active |
+| `PUBLISH_WINDOW_MINUTES` | `publish_window_minutes` | `int` | `45` | Publishing window cycle | Active |
+| `MIN_NEWS_SCORE` | `min_news_score` | `float` | `75.0` | Editorial threshold | Active |
+| `ADMIN_API_KEY` | `admin_api_key` | `str` | `""` | Manual trigger header auth | Active |
+| `IMAGE_MODEL` | — | `str` | `"imagen-3.0-generate-002"` | `config/models.py` | Legacy reference |
+| `OPENROUTER_API_KEY` | — | — | — | Legacy docs only | Unwired in code |
+
+### 4. Configuration Model & Startup Feedback
+- Refactored `config/settings.py` to use Pydantic v2 `BaseSettings`, `Field(validation_alias=AliasChoices(...))`, and `extra="ignore"`.
+- Implemented `settings.validate_api_keys()` returning structured diagnostic messages.
+- Updated `main.py`'s `lifespan` handler to emit actionable warnings/errors at startup if required LLM credentials are unconfigured without aborting test harnesses.
+- Created [.env.example](file:///Users/apple/Desktop/Tron/.env.example) documenting all reconciled variables with production-ready defaults and comments.

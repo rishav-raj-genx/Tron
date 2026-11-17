@@ -148,6 +148,16 @@ async def lifespan(app: FastAPI):
     """Manage application startup and shutdown with zero-failure guarantee."""
     logger.info("[APP] Starting Autonomous AI Persona News Publisher...")
 
+    # Validate presence of required LLM API credentials with actionable startup logs
+    _, key_diagnostics = settings.validate_api_keys()
+    for diag in key_diagnostics:
+        if "CRITICAL" in diag:
+            logger.error(f"[CONFIG] {diag}")
+        elif "WARNING" in diag:
+            logger.warning(f"[CONFIG] {diag}")
+        else:
+            logger.info(f"[CONFIG] {diag}")
+
     # Start the background task scheduler
     if not scheduler.running:
         # Schedule periodic background discovery and evaluation loop (~35 min + jitter)
@@ -430,7 +440,7 @@ async def trigger_agent_cycle(
     x_admin_key: str | None = Header(None, alias="X-Admin-Key")
 ):
     """Manual cycle trigger endpoint for testing or simulated fast-forwarding."""
-    admin_secret = os.getenv("ADMIN_API_KEY")
+    admin_secret = settings.admin_api_key
     if admin_secret and x_admin_key != admin_secret:
         raise HTTPException(status_code=403, detail="Unauthorized cycle trigger.")
 
@@ -445,7 +455,7 @@ async def trigger_window_close(
     x_admin_key: str | None = Header(None, alias="X-Admin-Key")
 ):
     """Manual window close trigger endpoint for testing window evaluation."""
-    admin_secret = os.getenv("ADMIN_API_KEY")
+    admin_secret = settings.admin_api_key
     if admin_secret and x_admin_key != admin_secret:
         raise HTTPException(status_code=403, detail="Unauthorized window close trigger.")
 
@@ -454,7 +464,5 @@ async def trigger_window_close(
 
 
 if __name__ == "__main__":
-    import os
     import uvicorn
-    port = int(os.getenv("PORT", "8080"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=settings.port)

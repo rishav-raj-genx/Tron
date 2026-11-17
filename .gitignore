@@ -1,8 +1,30 @@
+# Environments & Virtual Envs
+.venv/
 venv/
+ENV/
+env/
+
+# Byte-compiled / optimized / cache files
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Environment Variables & Secrets
+.env
+.env.*
+!.env.example
+
+# SQLite & Persistent Databases
 *.db
 *.db-wal
 *.db-shm
-.env
+*.sqlite
+*.sqlite3
+
+# OS Artifacts
 .DS_Store
+**/.DS_Store
+Thumbs.db
