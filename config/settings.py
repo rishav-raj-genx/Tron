@@ -82,7 +82,7 @@ if HAS_PYDANTIC_SETTINGS:
         )
         agent_db_path: str = Field(
             default="agent_memory.db",
-            validation_alias=AliasChoices("AGENT_DB_PATH", "agent_db_path")
+            validation_alias=AliasChoices("DATABASE_PATH", "AGENT_DB_PATH", "agent_db_path")
         )
         discovery_interval_minutes: int = Field(
             default=45,
@@ -183,7 +183,7 @@ else:
             self.llm_primary_provider = os.getenv("LLM_PRIMARY_PROVIDER", "gemini")
             self.llm_fallback_provider = os.getenv("LLM_FALLBACK_PROVIDER", "groq")
             self.database_url = os.getenv("DATABASE_URL", "sqlite:///agent_memory.db")
-            self.agent_db_path = os.getenv("AGENT_DB_PATH", "agent_memory.db")
+            self.agent_db_path = os.getenv("DATABASE_PATH", os.getenv("AGENT_DB_PATH", "agent_memory.db"))
             self.discovery_interval_minutes = int(os.getenv("DISCOVERY_INTERVAL_MINUTES", os.getenv("AGENT_INTERVAL_MINUTES", "45")))
             self.discovery_jitter_seconds = int(os.getenv("DISCOVERY_JITTER_SECONDS", "300"))
             self.publish_window_minutes = int(os.getenv("PUBLISH_WINDOW_MINUTES", "45"))
