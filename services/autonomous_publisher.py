@@ -34,6 +34,7 @@ from services.llm import LLMClient
 from services.memory import AgentMemoryStore, memory_store
 from services.topic_discovery import TopicDiscoveryService
 from utils.duplicate import DuplicateStatus, check_deterministic_duplicate
+from utils.url_validator import sanitize_source_urls
 
 logger = logging.getLogger(__name__)
 
@@ -242,12 +243,9 @@ class AutonomousPublisherService:
             trusted_sources = candidate.get("source_urls", [])
             if isinstance(trusted_sources, str):
                 trusted_sources = [trusted_sources]
-            clean_sources = [
-                str(u).strip() for u in trusted_sources
-                if isinstance(u, str) and str(u).strip().startswith("http")
-            ]
+            clean_sources = sanitize_source_urls(trusted_sources)
             if not clean_sources:
-                reason = "No valid http/https source URLs"
+                reason = "No valid public http/https source URLs"
                 logger.warning(f"[T-30] Rejecting candidate '{title}': {reason}")
                 self.memory.update_candidate_status(cand_id, "REJECTED", rejection_reason=reason)
                 continue
@@ -264,7 +262,7 @@ class AutonomousPublisherService:
             # Step 3: Validate synthesized article content & sources
             post_text = post_data.get("text", "").strip()
             rationale = post_data.get("rationale", "").strip()
-            sources = post_data.get("sources", [])
+            sources = sanitize_source_urls(post_data.get("sources", []))
 
             if not post_text or not rationale or not sources:
                 reason = "Synthesized post text, rationale, or sources empty"

@@ -19,6 +19,7 @@ import pytest
 
 from config.settings import settings
 from services.memory import AgentMemoryStore, memory_store
+from utils.circuit_breaker import gemini_breaker, groq_breaker
 from utils.rate_limiter import rate_limiter_registry
 
 
@@ -85,8 +86,10 @@ def stub_llm() -> DeterministicStubLLM:
 
 @pytest.fixture(autouse=True)
 def reset_test_state() -> Generator[None, None, None]:
-    """Autouse fixture ensuring clean global memory store and fresh rate limiters for every test."""
+    """Autouse fixture ensuring clean global memory store and fresh rate limiters and circuit breakers for every test."""
     rate_limiter_registry.reset_all()
+    gemini_breaker.reset()
+    groq_breaker.reset()
     with memory_store._get_connection() as conn:
         with conn:
             conn.execute("DELETE FROM x_publication_records")
@@ -97,6 +100,8 @@ def reset_test_state() -> Generator[None, None, None]:
             conn.execute("DELETE FROM agents")
     yield
     rate_limiter_registry.reset_all()
+    gemini_breaker.reset()
+    groq_breaker.reset()
 
 
 @pytest.fixture

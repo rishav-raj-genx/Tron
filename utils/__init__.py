@@ -11,6 +11,14 @@ from utils.api import (
     get_groq_headers,
     sanitize_url_credentials,
 )
+from utils.circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerOpenError,
+    CircuitState,
+    gemini_breaker,
+    groq_breaker,
+    is_transient_error,
+)
 from utils.duplicate import (
     DuplicateStatus,
     canonical_title,
@@ -25,6 +33,7 @@ from utils.rate_limiter import (
     extract_client_ip,
     rate_limiter_registry,
 )
+from utils.url_validator import is_valid_public_url, sanitize_source_urls
 
 __all__ = [
     "GEMINI_BASE_URL",
@@ -42,4 +51,12 @@ __all__ = [
     "rate_limiter_registry",
     "RateLimitMiddleware",
     "extract_client_ip",
+    "CircuitBreaker",
+    "CircuitState",
+    "CircuitBreakerOpenError",
+    "gemini_breaker",
+    "groq_breaker",
+    "is_transient_error",
+    "is_valid_public_url",
+    "sanitize_source_urls",
 ]

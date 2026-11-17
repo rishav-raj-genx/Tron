@@ -24,10 +24,15 @@
   - [x] Upgrade `GET /healthz` to perform deep SQLite liveness verification (`SELECT 1`, `PRAGMA journal_mode == "wal"`, active agents) returning HTTP 200 or HTTP 503 on database operational error.
   - [x] Add comprehensive test suite `tests/test_db_optimization.py` (7 new tests).
   - [x] Ensure 100% test pass (86/86 passing) and zero ruff lint errors.
-- [ ] **Step 1.3: Upstream Resilience, Dynamic Exponential Backoff Jitter & Circuit Breaker Failover**
-  - [ ] Dynamic exponential backoff with full jitter for Gemini Search Grounding and REST invocations.
-  - [ ] Circuit breaker state machine for secondary Groq failovers during sustained upstream network outages.
-  - [ ] Transient failure handling with automatic fail-closed deduplication protection.
+- [x] **Step 1.3: Upstream Resilience, Dynamic Exponential Backoff Jitter & Circuit Breaker Failover**
+  - [x] Enforce explicit connect + read timeouts on every outbound network call (Gemini SDK/REST, Groq SDK/REST, arXiv Atom API).
+  - [x] Implement thread/async-safe Circuit Breaker (`utils/circuit_breaker.py`) with `CLOSED`, `OPEN`, and `HALF_OPEN` states, independently wrapping Gemini and Groq.
+  - [x] Fast failover from primary (Gemini) to fallback (Groq) without wasting timeout windows when circuit is `OPEN`.
+  - [x] Dynamic exponential backoff retries (max 2 attempts) with jitter for transient errors (429, 5xx, timeouts); fatal errors (400, 401, 403) never retried.
+  - [x] Prompt injection isolation boundaries (`<untrusted_candidate_content>...</untrusted_candidate_content>`) and maximum character caps across `services/topic_discovery.py` and `services/editorial_engine.py`.
+  - [x] Strict source URL validation (`utils/url_validator.py`): public `http/https` only, stripping `javascript:`, `data:`, `file:`, localhost, link-local (`169.254.0.0/16`), and private IP ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`).
+  - [x] Add comprehensive test suite `tests/test_resilience_and_guardrails.py` (16 new tests).
+  - [x] Ensure 100% test pass (102/102 passing) and zero ruff lint errors.
 - [ ] **Step 1.4: Evaluation Observability, Prometheus Metrics & Live Health Telemetry**
   - [ ] Prometheus metrics endpoint (`/metrics`) exposing cycle counts, scoring distributions, LLM latency, and window status.
   - [ ] Structured JSON log formatter with correlation IDs across discovery cycles, scoring iterations, and publishing windows.
@@ -129,4 +134,55 @@
   - Keyset pagination non-overlapping pages and schema preservation.
   - Deep `/healthz` probe on healthy database (200).
   - Deep `/healthz` probe on database failure (503).
+- **Linter Status:** `ruff check .` passes with 0 errors.
+
+---
+
+## Step 1.3 Implementation & Audit Report
+
+### 1. Outbound Timeouts, Retries & Circuit Breaker
+- **Explicit Network Timeouts:**
+  - Gemini & Groq REST/SDK calls (`services/llm.py`): Explicit `httpx.Timeout(30.0, connect=10.0, read=25.0)` and `asyncio.wait_for(..., timeout=30.0)` prevent hung upstream connections.
+  - Gemini Grounding Web Search (`tools/shared/web_search.py`): Explicit `httpx.Timeout(20.0, connect=5.0, read=15.0)`.
+  - arXiv Fallback Retrieval (`services/topic_discovery.py`): Explicit `httpx.Timeout(15.0, connect=5.0, read=10.0)`.
+- **Circuit Breaker State Machine (`utils/circuit_breaker.py`):**
+  - Thread/async-safe Circuit Breaker with `CLOSED`, `OPEN`, and `HALF_OPEN` states.
+  - Trips provider to `OPEN` after `failure_threshold=3` consecutive transient failures.
+  - `OPEN` state short-circuits calls immediately without invoking network requests, fast-failing to the next provider.
+  - Automatic `HALF_OPEN` probe after `recovery_timeout=60.0s`: single test probe recovers circuit to `CLOSED` on success or returns to `OPEN` on failure.
+  - Providers wrapped independently via `gemini_breaker` and `groq_breaker` singletons.
+- **Transient-Only Retry & Error Classification:**
+  - Retries use bounded exponential backoff with jitter (`(2 ** attempt) + uniform(0.1, 0.5)`).
+  - Retries and trips only transient errors (`429`, `5xx`, connection resets, timeouts).
+  - Non-transient errors (`400`, `401`, `403`, `404`, `422`) fail fast, never retry, and never trip the breaker.
+
+### 2. Prompt Injection Isolation & Source URL Sanitization
+- **Prompt Injection Defense (`services/topic_discovery.py`, `services/editorial_engine.py`):**
+  - All untrusted candidate search results, article summaries, and scraped content are wrapped in explicit XML-style data boundaries: `<untrusted_candidate_content>...</untrusted_candidate_content>`.
+  - System prompts instruct the LLM to treat content within those tags strictly as untrusted raw data and ignore all embedded instructions, commands, or format overrides.
+  - Search snippets capped at 3,500 characters, titles at 200 characters, and summaries at 1,500 characters to prevent context-window bloat and token spikes.
+- **Strict Source URL Sanitization (`utils/url_validator.py`):**
+  - Validates public `http://` and `https://` schemes with well-formed hostnames.
+  - Rejects SSRF vectors, non-HTTP schemes (`javascript:`, `data:`, `file:`, `ftp:`), `localhost`, loopback (`127.0.0.0/8`), link-local metadata endpoints (`169.254.0.0/16`), and private IP ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`).
+  - Applied across `TopicDiscoveryService`, `EditorialEngine`, `AutonomousPublisherService`, and `tools/shared/web_search.py`.
+
+### 3. Test Verification Snapshot
+- **Total Tests:** 102 passing (100% pass rate in ~1.53s)
+- **New Test Suite:** `tests/test_resilience_and_guardrails.py` (16 new tests)
+  - Circuit breaker initial state `CLOSED`.
+  - Tripping to `OPEN` after threshold (3) transient failures.
+  - Recovery cooldown to `HALF_OPEN` and recovery to `CLOSED` on probe success.
+  - Probe failure in `HALF_OPEN` tripping back to `OPEN`.
+  - Transient vs non-transient error classification (400, 401, 403, 404, 422 vs 429, 500, 502, 503, 504).
+  - Fast failover from Gemini to Groq when Gemini circuit is `OPEN`.
+  - 3 transient Gemini errors tripping circuit and falling over to Groq.
+  - 401 Unauthorized not retrying and not tripping breaker.
+  - Both circuits `OPEN` raising `ProviderError`.
+  - Valid public URLs accepted.
+  - Non-HTTP schemes rejected.
+  - SSRF, localhost, link-local, and private IPs rejected.
+  - URL sanitization, deduplication, and trailing punctuation cleanup.
+  - Candidate topic extraction prompt containing `<untrusted_candidate_content>` isolation tags.
+  - Candidate search snippet capping at 3,500 characters.
+  - Editorial synthesis prompt isolating candidate content and sanitizing source URLs.
 - **Linter Status:** `ruff check .` passes with 0 errors.
