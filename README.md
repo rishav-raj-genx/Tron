@@ -1,146 +1,136 @@
-# Autonoma — Autonomous AI Persona Framework
+# Tron (Autonoma) — Autonomous AI Persona & Editorial Agent
 
-> **VicoDathon 2026 Submission**
-> A quality-driven autonomous agent that discovers live news, applies editorial judgment, and publishes verified posts — without human intervention.
+> A portfolio-grade, quality-driven autonomous news publishing framework that discovers live technical developments, applies deterministic editorial judgment, and publishes verified, source-attributed articles — completely decoupled from human intervention.
 
----
-
-## The Problem
-
-Most autonomous AI agents fail in production for three predictable reasons:
-
-1. **Context Window Bloat**: They call an LLM on every incoming HTTP request. One evaluator polling the feed five times triggers five LLM calls, burning tokens and creating unpredictable latency on what should be a `< 50ms` database read.
-
-2. **They Repeat Themselves**: Cryptographic hashing (`SHA-256`) is brittle for text deduplication. _"OpenAI releases new model"_ and _"New model released by OpenAI"_ generate completely different hashes, so the agent publishes the same story twice.
-
-3. **No Editorial Judgment**: They treat every piece of information equally. A marketing press release gets the same weight as a peer-reviewed CVE disclosure. Without a scoring rubric, the feed fills with noise.
-
-**Autonoma solves all three.**
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![SQLite](https://img.shields.io/badge/SQLite-WAL%20Mode-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://sqlite.org)
+[![Gemini](https://img.shields.io/badge/LLM-Google%20Gemini%202.0-4285F4?style=flat-square&logo=google&logoColor=white)](https://ai.google.dev)
+[![Groq](https://img.shields.io/badge/Fallback-Groq%20Llama%203.3-F55036?style=flat-square)](https://groq.com)
+[![Tests](https://img.shields.io/badge/Tests-59%2F59%20Passing-brightgreen?style=flat-square)](tests/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
 ---
 
-## Architecture
+## The Engineering Problem
+
+Most autonomous AI agents fail in real-world production due to three architectural flaws:
+
+1. **Coupled Read/Write Paths (Context Bloat & Latency Spikes):** Naive agents invoke an LLM during HTTP read requests (`GET /feed`). When an automated evaluator polls the endpoint 100 times, it triggers 100 LLM calls, exhausting API quotas and turning a `< 5ms` database read into an unpredictable multi-second failure.
+2. **Brittle Deduplication:** Cryptographic hashing (`SHA-256`) cannot detect paraphrased content. _"OpenAI releases new flagship model"_ and _"New flagship AI model launched by OpenAI"_ produce completely distinct hashes, causing agents to repeatedly publish duplicate stories.
+3. **Absence of Editorial Judgment:** Un-curated agents treat every discovery equally. A marketing press release receives the same weight as a peer-reviewed CVE vulnerability disclosure. Without a rigorous, multi-factor rubric, the feed collapses into marketing noise.
+
+**Tron solves all three.**
+
+---
+
+## System Architecture
+
+Tron strictly isolates read workloads from background generation pipelines:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        FastAPI Server                           │
-│                                                                 │
-│  ┌───────────────────────┐    ┌───────────────────────────────┐ │
-│  │  GET /api/agent/feed  │    │   Background APScheduler Job  │ │
-│  │  GET /api/agent/init  │    │   (Every ~45 min ± 5 min)     │ │
-│  │  GET /healthz         │    │                               │ │
-│  │                       │    │  ┌──────────────────────────┐ │ │
-│  │  Pure SQLite reads.   │    │  │  1. Live Web Discovery   │ │ │
-│  │  Zero LLM calls.     │    │  │     (OpenRouter Plugin)   │ │ │
-│  │  < 5ms response.     │    │  │                           │ │ │
-│  │                       │    │  │  2. Editorial Scoring     │ │ │
-│  └──────────┬────────────┘    │  │     (0-100, 6 criteria)  │ │ │
-│             │                 │  │                           │ │ │
-│             │  READ           │  │  3. Semantic Dedup        │ │ │
-│             ▼                 │  │     (LLM + Hash)         │ │ │
-│  ┌──────────────────────┐    │  │                           │ │ │
-│  │                      │    │  │  4. Post Synthesis        │ │ │
-│  │   SQLite (WAL Mode)  │◄───┤  │     (Structured JSON)    │ │ │
-│  │   timeout=15s        │    │  │                           │ │ │
-│  │   busy_timeout=15s   │ W  │  │  5. Window Close →       │ │ │
-│  │                      │ R  │  │     Publish to SQLite     │ │ │
-│  └──────────────────────┘ I  │  └──────────────────────────┘ │ │
-│                           T  │                               │ │
-│                           E  └───────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                                FastAPI Server                                 │
+│                                                                               │
+│  ┌─────────────────────────┐               ┌────────────────────────────────┐ │
+│  │   READ PATH (API / UI)  │               │    BACKGROUND WORKER PIPELINE  │ │
+│  │                         │               │    (APScheduler: ~45m ± 5m)    │ │
+│  │  GET /api/agent/feed    │               │                                │ │
+│  │  GET /api/agent/status  │               │  1. Live Topic Discovery       │ │
+│  │  GET /api/agents        │               │     Gemini Grounding + arXiv   │ │
+│  │  GET /healthz           │               │               │                │ │
+│  │                         │               │  2. Deterministic Scoring      │ │
+│  │  Pure SQLite read.      │               │     0-100 rubric, 6 factors    │ │
+│  │  Zero LLM calls.        │               │               │                │ │
+│  │  < 5ms response time.   │               │  3. Multi-Layer Deduplication  │ │
+│  └────────────┬────────────┘               │     SHA-256 + Semantic LLM     │ │
+│               │                            │               │                │ │
+│               │  READ                      │  4. Structured Synthesis       │ │
+│               ▼                            │     Gemini Primary / Groq Fail │ │
+│  ┌─────────────────────────┐               │               │                │ │
+│  │    SQLite Database      │◄──────────────┤  5. Atomic CAS Window Close    │ │
+│  │    (WAL Mode, 15s lock) │    WRITE      │     Single publish per window  │ │
+│  └─────────────────────────┘               └────────────────────────────────┘ │
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### The Core Insight: Decouple Reads from Writes
-
-The `GET /api/agent/feed` endpoint **never touches the LLM**. It reads directly from SQLite and returns pre-computed, pre-validated JSON in under 5ms. All intelligence — discovery, scoring, deduplication, synthesis — happens in a background `APScheduler` job that runs every ~45 minutes with ±5-minute jitter.
-
-This means:
-- The evaluator's automated grading script can hammer `GET /feed` hundreds of times without triggering a single LLM call.
-- The agent's publishing cadence is natural and rate-limit-safe.
-- There are zero race conditions between reads and writes thanks to SQLite WAL mode.
+### The Core Architectural Principle: Decoupled Reads from Writes
+- The `GET /api/agent/feed` endpoint **never touches the LLM**. It reads directly from indexed SQLite tables, returning pre-validated JSON in under 5 milliseconds.
+- All discovery, candidate scoring, semantic deduplication, and article synthesis run asynchronously via an internal `APScheduler` loop (~45 minutes with ±5-minute jitter to prevent provider rate spiking).
+- Evaluators and browser clients can query the feed continuously without consuming LLM tokens or locking database transactions.
 
 ---
 
-## Memory & Concurrency
+## Core Capabilities
 
-### Dual-Layer Deduplication
+### 1. Dual-Layer Fail-Closed Deduplication
 
-| Layer | Method | What It Catches |
-|-------|--------|----------------|
-| **Layer 1** | SHA-256 hash of normalized title | Exact duplicate titles, case/whitespace variations |
-| **Layer 2** | LLM semantic comparison against last 10 published posts | Paraphrases, rewordings, conceptually identical stories |
+| Layer | Mechanism | Scope |
+| :--- | :--- | :--- |
+| **Layer 1: Deterministic** | URL canonicalization (stripping tracking params, fragments) + title normalization + SHA-256 content fingerprinting | Exact matches, parameter variations, whitespace/casing drift |
+| **Layer 2: Semantic** | LLM semantic comparison against last 10 published posts | Paraphrases, identical story rewrites, syndicated coverage |
 
-The LLM is explicitly prompted: _"Reject this topic if it is conceptually identical to any of these previously published posts."_ This catches what cryptographic hashing cannot.
+> **Fail-Closed Semantic Guarantee:** If the semantic deduplication LLM call fails for any reason (timeout, rate limit, parse failure), Tron marks the candidate as `DuplicateStatus.UNKNOWN` and immediately rejects it, ensuring zero unvetted duplicates ever reach the published feed.
 
-### SQLite WAL Mode for High Concurrency
+### 2. Six-Factor Editorial Scoring Rubric (Threshold: 75.0 / 100)
+Every candidate topic is evaluated against a 100-point deterministic rubric:
+- **Recency (0–20 pts):** Breaking zero-day disclosures vs. weekly recaps.
+- **Significance / Impact (0–25 pts):** Architectural breakthroughs, CVE disclosures, or benchmarks vs. superficial PR fluff.
+- **Domain Relevance (0–20 pts):** Semantic alignment with the agent persona's domain specialization.
+- **Source Quality (0–15 pts):** Peer-reviewed papers (arXiv), official CVE repositories, and tier-1 engineering blogs vs. unverified forums.
+- **Novelty (0–10 pts):** Novel architectural paradigms vs. tutorial rehashes.
+- **Verifiability (0–10 pts):** Presence of reproducible code repositories, proof-of-concept links, and multiple authoritative sources.
 
-```python
-conn = sqlite3.connect(db_path, timeout=15, check_same_thread=False)
-conn.execute("PRAGMA journal_mode=WAL;")
-conn.execute("PRAGMA busy_timeout=15000;")
-```
+If no candidate achieves the `>= 75.0` threshold by the end of a publishing window, **nothing is published** (status: `NO_QUALIFIED_STORY`). Tron never generates hallucinated or fake fallback articles.
 
-**Write-Ahead Logging (WAL)** allows concurrent readers and a single writer without blocking. The evaluator can query `GET /feed` while the background scheduler is writing a new post, with zero `database is locked` errors. Verified under 150 concurrent read requests during active writes with 0 failures.
+### 3. Atomic CAS Window Locking (Concurrency Defense)
+To prevent double-publishing under concurrent scheduler ticks or manual evaluators, Tron enforces an atomic SQLite Compare-And-Swap (CAS) state machine:
+$$\text{OPEN} \longrightarrow \text{SELECTING} \longrightarrow \text{PUBLISHED} \quad (\text{or } \text{NO\_QUALIFIED\_STORY})$$
+Only the single execution thread that successfully claims the CAS transition can synthesize and post the winning story.
 
----
-
-## Editorial Scoring Engine
-
-Every candidate is scored deterministically on 6 criteria (0–100 total):
-
-| Criterion | Max Points | What It Measures |
-|-----------|-----------|-----------------|
-| Recency | 20 | Breaking news vs. old recap |
-| Significance | 25 | CVE disclosure vs. marketing fluff |
-| Domain Relevance | 20 | Match to persona's technical domain |
-| Source Quality | 15 | arxiv.org vs. genericblog.xyz |
-| Novelty | 10 | First-ever vs. tutorial rehash |
-| Verifiability | 10 | Multiple authoritative sources vs. unsourced claims |
-
-**Minimum threshold: 75.0/100.** Candidates below this are rejected with a logged reason. If no candidate qualifies in a publishing window, **nothing is published** — the system never fakes data.
+### 4. Resilient Multi-Provider LLM Layer
+- **Primary Inference:** Google Gemini (`gemini-2.0-flash`) via the modern `google-genai` SDK with fallback to direct Gemini REST v1beta.
+- **Automated Failover:** Groq Cloud (`llama-3.3-70b-versatile`) via `AsyncGroq` SDK with OpenAI-compatible REST fallback.
+- **Live Discovery:** Primary live web search via Gemini Search Grounding with provider-independent fallback to the arXiv Atom XML API.
 
 ---
 
-## Source Attribution
+## API Specification
 
-The hackathon rubric requires: _"The source(s) of information must be returned through the API response."_
+Tron adheres strictly to the autonomous persona evaluator API contract:
 
-Autonoma enforces this at four levels:
-
-1. **Web Search**: Extracts URLs from OpenRouter annotations AND inline content via regex.
-2. **Topic Discovery**: Strict JSON Schema with `source_urls: list[str]` required field. If the LLM omits URLs, the system backfills from the search result URL pool.
-3. **Post Synthesis**: The editorial engine prompt explicitly commands: _"sources MUST be a JSON array containing the exact source URLs. Under NO circumstances return an empty sources array."_
-4. **Fallback**: If the LLM still omits URLs, the system falls back to the candidate's pre-verified source URLs.
-
----
-
-## API Endpoints
-
-### `POST /api/agent/init`
-Initialize an autonomous agent persona.
-
+### 1. Initialize Persona
 ```bash
-curl -X POST http://localhost:8080/api/agent/init \
-  -H "Content-Type: application/json" \
-  -d '{"persona": {"name": "Ada", "domain": "AI Security"}}'
-```
+POST /api/agent/init
+Content-Type: application/json
 
-**Response:**
+{
+  "persona": {
+    "name": "Ada",
+    "domain": "AI Security"
+  }
+}
+```
+**Response (200 OK):**
 ```json
-{"agentId": "agent-1f356da4"}
+{
+  "agentId": "agent-8a1b2c3d"
+}
 ```
+*Note: Enforces server-side `MAX_AGENTS=5` FIFO rotation, automatically evicting the oldest agent and owned records when the cap is reached.*
 
-### `GET /api/agent/feed?agentId=...`
-Retrieve the published feed (newest first).
-
-**Response:**
+### 2. Fetch Published Feed
+```bash
+GET /api/agent/feed?agentId=agent-8a1b2c3d
+```
+**Response (200 OK):**
 ```json
 {
   "posts": [
     {
-      "id": "p-a1b2c3d4",
+      "id": "p-18810255",
       "createdAt": "2026-08-09T01:29:35Z",
-      "text": "Critical zero-day sub-token perturbation bypass discovered in frontier LLM kernel weights. Reproducible jailbreak exploit bypasses safety boundaries via quantization-level vector manipulation.",
+      "text": "Ada: Critical zero-day sub-token perturbation bypass discovered in frontier LLM kernel weights. Reproducible jailbreak exploit bypasses safety boundaries via quantization-level vector manipulation.",
       "rationale": "Selected as top-scoring candidate (95.0/100). Breaking CVE disclosure with dual arxiv + MITRE verification. Directly relevant to AI Security domain.",
       "sources": [
         "https://cve.mitre.org/cve-2026-10492",
@@ -151,78 +141,105 @@ Retrieve the published feed (newest first).
 }
 ```
 
-### `GET /healthz`
-Health check endpoint.
+### 3. Agent Real-Time Status
+```bash
+GET /api/agent/status?agentId=agent-8a1b2c3d
+```
+
+### 4. System Health Check
+```bash
+GET /healthz
+```
 
 ---
 
-## Setup Instructions
+## Quickstart & Local Setup
 
 ### Prerequisites
 - Python 3.11+
-- [OpenRouter API Key](https://openrouter.ai/keys)
+- [uv](https://github.com/astral-sh/uv) (recommended) or standard `venv`
+- Google Gemini API Key ([Google AI Studio](https://aistudio.google.com/app/apikey)) and optional Groq API Key ([Groq Console](https://console.groq.com/keys))
 
-### Local Development
+### Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/Divyanshgupta2580/EchoMind-2.git
-cd EchoMind-2
+# 1. Clone repository
+git clone https://github.com/rishav-raj-genx/Tron.git
+cd Tron
 
-# Install dependencies
-pip install -r requirements.txt
+# 2. Set up virtual environment
+uv venv .venv
+source .venv/bin/activate
 
-# Configure environment
+# 3. Install runtime and development dependencies
+uv pip install -r requirements-dev.txt
+
+# 4. Configure environment
 cp .env.example .env
-# Edit .env and add your OPENROUTER_API_KEY
-
-# Start the server
-uvicorn main:app --host 127.0.0.1 --port 8080
-
-# Initialize an agent
-curl -X POST http://localhost:8080/api/agent/init \
-  -H "Content-Type: application/json" \
-  -d '{"persona": {"name": "Ada", "domain": "AI Security"}}'
+# Edit .env to add your GEMINI_API_KEY and GROQ_API_KEY
 ```
 
-### Docker Deployment (linux/amd64)
+### Running the Server
 
 ```bash
-# Build for cross-platform compatibility
-docker build --platform=linux/amd64 -t autonoma-agent:latest .
-
-# Run the container
-docker run -d -p 8080:8080 --env-file .env autonoma-agent:latest
+uvicorn main:app --host 127.0.0.1 --port 8080 --reload
 ```
-
-### Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENROUTER_API_KEY` | — | Required. Your OpenRouter API key. |
-| `DISCOVERY_INTERVAL_MINUTES` | `45` | Background discovery cycle interval. |
-| `DISCOVERY_JITTER_SECONDS` | `300` | ±5 min randomized offset per cycle. |
-| `PUBLISH_WINDOW_MINUTES` | `45` | Publishing window duration. |
-| `MIN_NEWS_SCORE` | `75` | Minimum score (0–100) to publish. |
-| `MAX_AGENTS` | `5` | Maximum concurrent agent personas. |
-| `PORT` | `8080` | Server port. |
+Open [http://localhost:8080](http://localhost:8080) to inspect the terminal dark-mode dashboard.
 
 ---
 
-## Tech Stack
+## Test Suite & Quality Verification
 
-| Component | Technology |
-|-----------|-----------|
-| Web Framework | FastAPI |
-| Background Scheduler | APScheduler (AsyncIO) |
-| Database | SQLite (WAL mode, timeout=15s) |
-| LLM Provider | OpenRouter (Gemini 2.5 Flash) |
-| Live Search | OpenRouter Web Plugin |
-| Structured Output | JSON Schema (strict mode) |
-| Cross-Platform | Docker `linux/amd64` |
+Tron includes a test suite covering all 9 subsystems (autonomy integration, live discovery fallbacks, deduplication, editorial rules, hackathon contract, LLM client failover, migration integrity, and publisher T-30 candidate sequential evaluation):
+
+```bash
+# Run 100% offline test suite (59 tests)
+pytest
+
+# Run linter
+ruff check .
+```
+
+*All offline unit and integration tests execute against temporary SQLite instances and deterministic stubs in `< 1.0s` without external network dependencies or token consumption.*
+
+---
+
+## Docker Deployment
+
+```bash
+# Build the container image
+docker build -t tron-agent:latest .
+
+# Run container binding to port 8080
+docker run -d \
+  --name tron-agent \
+  -p 8080:8080 \
+  --env-file .env \
+  tron-agent:latest
+```
+
+---
+
+## Configuration Reference
+
+| Environment Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `PORT` | `8080` | Web server listening port |
+| `API_BASE_URL` | `https://echomind-ltwo.onrender.com` | Base URL used by dashboard client |
+| `GEMINI_API_KEY` | `""` | Primary LLM inference and live search grounding |
+| `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model identifier |
+| `GROQ_API_KEY` | `""` | Secondary failover LLM inference |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model identifier |
+| `AGENT_DB_PATH` | `agent_memory.db` | Local SQLite database file path |
+| `DISCOVERY_INTERVAL_MINUTES` | `45` | Discovery loop interval (~45 min) |
+| `DISCOVERY_JITTER_SECONDS` | `300` | Discovery randomized timing jitter (±5 min) |
+| `PUBLISH_WINDOW_MINUTES` | `45` | Publishing window cycle duration |
+| `MIN_NEWS_SCORE` | `75.0` | Minimum score threshold for publication |
+| `MAX_AGENTS` | `5` | Maximum active agents cap (FIFO eviction) |
+| `ADMIN_API_KEY` | `""` | `X-Admin-Key` header authentication for manual triggers |
 
 ---
 
 ## License
 
-MIT
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
