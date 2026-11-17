@@ -14,10 +14,12 @@
   - [x] Reconcile configuration models using `pydantic-settings` with `AliasChoices`, defaults, and `extra="ignore"`.
   - [x] Add actionable startup validation via `settings.validate_api_keys()` for graceful missing-key reporting.
   - [x] Create comprehensive `.env.example` with defaults, comments, and documented environment variables.
-- [ ] **Step 0.3: Architectural & LLM Provider Realignment**
-  - [ ] Clean up obsolete OpenRouter and X/Twitter references across `docs/` and `README.md`.
-  - [ ] Align documentation with active Gemini Primary + Groq Fallback architecture.
-  - [ ] Verify configuration models in `config/models.py` and `config/settings.py`.
+- [x] **Step 0.3: Reproducible Dependencies, google-genai / groq SDK Audit & Clean Server Boot**
+  - [x] Audit `requirements.txt` and pin deterministic compatible version bounds.
+  - [x] Create `requirements-dev.txt` containing `pytest`, `pytest-asyncio`, and `ruff`.
+  - [x] Audit `google-genai` (v3.4.0) modern client SDK and `groq` (v1.7.0) `AsyncGroq` usage.
+  - [x] Set up local Python 3.12 `.venv` and verify clean installation via `uv`.
+  - [x] Execute server smoke boot test: verify `GET /healthz` (200), `GET /` (200), static assets, SQLite WAL mode, and clean APScheduler lifespan shutdown.
 - [ ] **Step 0.4: Test Suite Stabilization & Regression Hardening**
   - [ ] Mock un-mocked live LLM call in `tests/test_hackathon_spec.py` (`test_source_extraction_and_structured_json_synthesis`).
   - [ ] Ensure 100% test pass rate across all 9 test suites without network dependencies.
@@ -188,3 +190,34 @@
 - Implemented `settings.validate_api_keys()` returning structured diagnostic messages.
 - Updated `main.py`'s `lifespan` handler to emit actionable warnings/errors at startup if required LLM credentials are unconfigured without aborting test harnesses.
 - Created [.env.example](file:///Users/apple/Desktop/Tron/.env.example) documenting all reconciled variables with production-ready defaults and comments.
+
+---
+
+## Step 0.3 Audit Report
+
+### 1. Dependency & SDK Audit
+- **SDK Modernization:**
+  - Audited `google-genai` (v3.4.0 installed): Confirmed `from google import genai` and `from google.genai import types` with `client = genai.Client(...)` and `types.GenerateContentConfig` in `services/llm.py`.
+  - Audited `groq` (v1.7.0 installed): Confirmed `AsyncGroq(api_key=...)` in `services/llm.py`.
+  - Audited provider fallback: Gemini Primary -> Groq Fallback for text/structured generation; Gemini Google Search Grounding -> arXiv Atom XML API for topic discovery. OpenRouter is confirmed unwired in code.
+- **Dependency Pinning:**
+  - Updated [requirements.txt](file:///Users/apple/Desktop/Tron/requirements.txt) with compatible version bounds (`fastapi>=0.109.0,<1.0.0`, `uvicorn>=0.27.0,<1.0.0`, `apscheduler>=3.10.0,<4.0.0`, `httpx>=0.26.0,<1.0.0`, `pydantic>=2.5.0,<3.0.0`, `pydantic-settings>=2.1.0,<3.0.0`, `python-dotenv>=1.0.0,<2.0.0`, `google-genai>=1.0.0,<4.0.0`, `groq>=0.4.0,<2.0.0`).
+  - Created [requirements-dev.txt](file:///Users/apple/Desktop/Tron/requirements-dev.txt) containing `-r requirements.txt`, `pytest>=8.0.0,<10.0.0`, `pytest-asyncio>=0.23.0,<1.0.0`, and `ruff>=0.8.0,<1.0.0`.
+- **Environment:**
+  - Standardized local virtual environment on `.venv` using `uv venv .venv` and installed dependencies via `uv pip install --python .venv -r requirements-dev.txt`.
+
+### 2. Clean Server Boot & Verification Results
+- **Boot Process:**
+  - Started server via `uvicorn main:app --host 127.0.0.1 --port 8080`.
+  - Lifespan started cleanly, emitted diagnostic configuration alerts, initialized APScheduler (`AutonomousPublisherService.run_all_agents_cycle`, 45 min interval, ±300s jitter), and completed startup.
+- **HTTP Smoke Tests:**
+  - `GET /healthz` -> HTTP `200` (`{"status": "healthy", ...}`).
+  - `GET /` -> HTTP `200` (serves `static/index.html` cleanly, 7811 bytes).
+  - `GET /static/styles.css` -> HTTP `200` (15104 bytes).
+  - `GET /static/app.js` -> HTTP `200` (23941 bytes).
+- **SQLite Concurrency & WAL Mode:**
+  - Confirmed `PRAGMA journal_mode = wal` and `PRAGMA busy_timeout = 15000` ms.
+- **Graceful Lifespan Shutdown:**
+  - Delivered `SIGINT` / `SIGTERM` to uvicorn process.
+  - Scheduler invoked `scheduler.shutdown(wait=False)`, FastAPI application lifespan terminated gracefully, and process exited with code `0`.
+
