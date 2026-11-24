@@ -12,11 +12,11 @@ services:
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL
-        value: gemini-3-flash-preview
+        value: gemini-2.0-flash
       - key: GROQ_API_KEY
         sync: false
       - key: GROQ_MODEL
-        value: qwen/qwen3.8-27b
+        value: llama-3.3-70b-versatile
       - key: LLM_PRIMARY_PROVIDER
         value: gemini
       - key: LLM_FALLBACK_PROVIDER
