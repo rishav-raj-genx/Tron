@@ -1,0 +1,45 @@
+services:
+  - type: web
+    name: tron-autonoma
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3-flash-preview
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: qwen/qwen3.8-27b
+      - key: LLM_PRIMARY_PROVIDER
+        value: gemini
+      - key: LLM_FALLBACK_PROVIDER
+        value: groq
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: AGENT_DB_PATH
+        value: agent_memory.db
+      - key: DISCOVERY_INTERVAL_MINUTES
+        value: 45
+      - key: DISCOVERY_JITTER_SECONDS
+        value: 300
+      - key: PUBLISH_WINDOW_MINUTES
+        value: 45
+      - key: MIN_NEWS_SCORE
+        value: 75.0
+      - key: MAX_AGENTS
+        value: 5
+      - key: ENABLE_DOCS
+        value: false
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: MUTATION_RATE_LIMIT_PER_MINUTE
+        value: 30

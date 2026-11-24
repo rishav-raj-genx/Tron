@@ -144,6 +144,12 @@ class StressTestQA(unittest.TestCase):
         print(f"-> Top Leader Selected for Window: '{leader['title']}' (Score: {leader['score']:.1f})")
 
         # Synthesize and Publish
+        from unittest.mock import AsyncMock
+        editorial.llm.generate_structured = AsyncMock(return_value={
+            "post_text": "Ada: Critical zero-day sub-token perturbation in frontier LLM kernel analyzed and validated.",
+            "rationale": "Selected for highest verified technical severity (95.0) and immediate security impact.",
+            "sources": ["https://arxiv.org/abs/2608.01234"]
+        })
         synth = asyncio.run(editorial.synthesize_post_for_leader(agent_id, profile, leader))
         post = self.memory.save_post(
             agent_id=agent_id,

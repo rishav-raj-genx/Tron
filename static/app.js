@@ -269,7 +269,7 @@ function renderAgentsList() {
           </div>
         </div>
         <div class="agent-card-action">
-          <button type="button" class="btn-view-agent" onclick="selectAgent('${escapeHtml(a.agentId)}')">
+          <button type="button" class="btn-view-agent" data-select-agent="${escapeHtml(a.agentId)}">
             ${isSelected ? 'Inspecting' : 'View Agent'}
           </button>
         </div>
@@ -395,7 +395,12 @@ function renderFeed() {
       </div>
       ${post.sources && post.sources.length ? `
         <div class="feed-sources">
-          ${post.sources.map(s => `<a href="${escapeHtml(s)}" target="_blank" rel="noopener" class="source-link">${escapeHtml(formatSourceUrl(s))}</a>`).join("")}
+          ${post.sources.map(s => {
+            const cleanUrl = String(s || "").trim();
+            const isSafe = /^https?:\/\//i.test(cleanUrl);
+            const safeHref = isSafe ? escapeHtml(cleanUrl) : "#";
+            return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" class="source-link">${escapeHtml(formatSourceUrl(cleanUrl))}</a>`;
+          }).join("")}
         </div>
       ` : ""}
     </div>
@@ -700,10 +705,21 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
-  // 5. Form listener
+  // 5. Form listener & Agent selection delegation
   const form = document.getElementById("persona-init-form");
   if (form) {
     form.addEventListener("submit", handleInitForm);
+  }
+
+  const agentsGrid = document.getElementById("agents-grid");
+  if (agentsGrid) {
+    agentsGrid.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-select-agent]");
+      if (btn) {
+        const aid = btn.getAttribute("data-select-agent");
+        if (aid) selectAgent(aid);
+      }
+    });
   }
 
   // 6. Restore session & load agents

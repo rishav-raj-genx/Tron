@@ -1,0 +1,42 @@
+version: "3.8"
+
+services:
+  tron-autonoma:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tron-autonoma-prod
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-3-flash-preview}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MODEL=${GROQ_MODEL:-qwen/qwen3.8-27b}
+      - LLM_PRIMARY_PROVIDER=${LLM_PRIMARY_PROVIDER:-gemini}
+      - LLM_FALLBACK_PROVIDER=${LLM_FALLBACK_PROVIDER:-groq}
+      - TURSO_DATABASE_URL=${TURSO_DATABASE_URL:-}
+      - TURSO_AUTH_TOKEN=${TURSO_AUTH_TOKEN:-}
+      - AGENT_DB_PATH=/app/data/agent_memory.db
+      - DISCOVERY_INTERVAL_MINUTES=${DISCOVERY_INTERVAL_MINUTES:-45}
+      - DISCOVERY_JITTER_SECONDS=${DISCOVERY_JITTER_SECONDS:-300}
+      - PUBLISH_WINDOW_MINUTES=${PUBLISH_WINDOW_MINUTES:-45}
+      - MIN_NEWS_SCORE=${MIN_NEWS_SCORE:-75.0}
+      - MAX_AGENTS=5
+      - ENABLE_DOCS=${ENABLE_DOCS:-false}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - MUTATION_RATE_LIMIT_PER_MINUTE=${MUTATION_RATE_LIMIT_PER_MINUTE:-30}
+    volumes:
+      - tron_storage:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/healthz', timeout=4).getcode() == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  tron_storage:
+    driver: local

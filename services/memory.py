@@ -16,11 +16,15 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Generator
+
+from config.settings import settings
+from services.turso_client import TursoConnection
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +38,42 @@ class AgentMemoryStore:
     Uses SQLite with WAL mode for concurrency, durability, and zero external dependency.
     """
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH):
+    def __init__(
+        self,
+        db_path: str = DEFAULT_DB_PATH,
+        turso_url: str | None = None,
+        turso_token: str | None = None
+    ):
+        # If a custom local file path is explicitly passed (e.g. in tests with tempfile),
+        # use local SQLite unless db_path is specifically a remote libsql/https URL.
+        is_custom_local = db_path != DEFAULT_DB_PATH and not (db_path.startswith("libsql://") or db_path.startswith("https://"))
+
+        if is_custom_local or turso_url == "" or os.getenv("TESTING") == "1":
+            self.turso_url = ""
+            self.turso_token = ""
+        else:
+            self.turso_url = (
+                turso_url
+                or os.getenv("TURSO_DATABASE_URL")
+                or os.getenv("TURSO_DB_URL")
+                or getattr(settings, "turso_database_url", "")
+            )
+            self.turso_token = (
+                turso_token
+                or os.getenv("TURSO_AUTH_TOKEN")
+                or getattr(settings, "turso_auth_token", "")
+            )
+            db_url_env = os.getenv("DATABASE_URL", "")
+            if not self.turso_url and (db_url_env.startswith("libsql://") or db_url_env.startswith("https://")):
+                self.turso_url = db_url_env
+            if not self.turso_url and (db_path.startswith("libsql://") or db_path.startswith("https://")):
+                self.turso_url = db_path
+
+        self.is_turso = bool(self.turso_url and self.turso_token)
         self.db_path = db_path
-        self._ensure_parent_dir()
+        self._lock = threading.Lock()
+        if not self.is_turso:
+            self._ensure_parent_dir()
         self._init_db()
 
     def _ensure_parent_dir(self) -> None:
@@ -49,18 +86,25 @@ class AgentMemoryStore:
             logger.warning(f"[MEMORY] Could not create parent directory for {self.db_path}: {e}")
 
     @contextmanager
-    def _get_connection(self) -> Generator[sqlite3.Connection, None, None]:
-        self._ensure_parent_dir()
-        conn = sqlite3.connect(self.db_path, timeout=15, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        # Enable WAL mode for high concurrency (concurrent readers + single writer)
-        conn.execute("PRAGMA journal_mode=WAL;")
-        # SQLite-level busy timeout (ms) — retry internally before raising "database is locked"
-        conn.execute("PRAGMA busy_timeout=15000;")
-        try:
-            yield conn
-        finally:
-            conn.close()
+    def _get_connection(self) -> Generator[Any, None, None]:
+        if self.is_turso:
+            conn = TursoConnection(self.turso_url, self.turso_token)
+            try:
+                yield conn
+            finally:
+                conn.close()
+        else:
+            self._ensure_parent_dir()
+            conn = sqlite3.connect(self.db_path, timeout=15, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            # Enable WAL mode for high concurrency (concurrent readers + single writer)
+            conn.execute("PRAGMA journal_mode=WAL;")
+            # SQLite-level busy timeout (ms) — retry internally before raising "database is locked"
+            conn.execute("PRAGMA busy_timeout=15000;")
+            try:
+                yield conn
+            finally:
+                conn.close()
 
     def _init_db(self) -> None:
         """Initialize database schema."""
@@ -159,12 +203,16 @@ class AgentMemoryStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_candidates_agent_hash ON news_candidates(agent_id, topic_hash);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_x_pub_window ON x_publication_records(window_id);")
             conn.commit()
-            logger.info(f"[MEMORY] Initialized SQLite store at {self.db_path}")
+            if self.is_turso:
+                logger.info(f"[MEMORY] Initialized Turso Cloud Database at {self.turso_url}")
+            else:
+                logger.info(f"[MEMORY] Initialized SQLite store at {self.db_path}")
 
     @staticmethod
     def compute_topic_hash(topic_text: str) -> str:
-        """Compute normalized SHA-256 hash for topic deduplication."""
-        normalized = "".join(c.lower() for c in topic_text if c.isalnum() or c.isspace()).strip()
+        """Compute normalized SHA-256 hash for topic deduplication with whitespace collapsing."""
+        cleaned = "".join(c.lower() for c in str(topic_text or "") if c.isalnum() or c.isspace())
+        normalized = " ".join(cleaned.split())
         return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
     # =========================================================================
@@ -174,35 +222,51 @@ class AgentMemoryStore:
     def register_agent(self, agent_id: str, name: str, domain: str, max_agents: int = 5) -> dict[str, Any]:
         """
         Register a new autonomous agent with server-side atomic FIFO rotation.
-        If existing agents count >= max_agents (default 5), atomically deletes the oldest agent
+        Guarantees thread and database safety: the count of agents can never exceed max_agents (default 5).
+        If existing agents count >= max_agents, atomically deletes the oldest agent
         and all owned dependent records (windows, candidates, feed posts, decisions, x records).
         """
         now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        with self._get_connection() as conn:
-            # Query existing agents ordered strictly by persisted creation timestamp ASC
-            rows = conn.execute("SELECT agent_id, name, created_at FROM agents ORDER BY created_at ASC").fetchall()
-            
-            # Enforce 5-agent limit: rotate out oldest agent if at or above capacity
-            if len(rows) >= max_agents:
-                excess_count = (len(rows) - max_agents) + 1
-                oldest_to_evict = rows[:excess_count]
-                for old in oldest_to_evict:
-                    old_id = old["agent_id"]
-                    logger.info(f"[MEMORY] Enforcing MAX_AGENTS={max_agents}: Evicting oldest agent '{old['name']}' ({old_id}, created {old['created_at']})")
-                    # Delete all dependent data owned by the evicted agent
-                    conn.execute("DELETE FROM publishing_windows WHERE agent_id = ?", (old_id,))
-                    conn.execute("DELETE FROM news_candidates WHERE agent_id = ?", (old_id,))
-                    conn.execute("DELETE FROM feed_posts WHERE agent_id = ?", (old_id,))
-                    conn.execute("DELETE FROM editorial_decisions WHERE agent_id = ?", (old_id,))
-                    conn.execute("DELETE FROM x_publication_records WHERE agent_id = ?", (old_id,))
-                    conn.execute("DELETE FROM agents WHERE agent_id = ?", (old_id,))
+        with self._lock:
+            with self._get_connection() as conn:
+                # Query existing agents ordered strictly by persisted creation timestamp ASC
+                rows = conn.execute("SELECT agent_id, name, created_at FROM agents ORDER BY created_at ASC").fetchall()
+                
+                # Enforce 5-agent limit: rotate out oldest agent if at or above capacity
+                if len(rows) >= max_agents:
+                    excess_count = (len(rows) - max_agents) + 1
+                    oldest_to_evict = rows[:excess_count]
+                    for old in oldest_to_evict:
+                        old_id = old["agent_id"]
+                        logger.info(f"[MEMORY] Enforcing MAX_AGENTS={max_agents}: Evicting oldest agent '{old['name']}' ({old_id}, created {old['created_at']})")
+                        # Delete all dependent data owned by the evicted agent (children before parents)
+                        conn.execute("DELETE FROM x_publication_records WHERE agent_id = ?", (old_id,))
+                        conn.execute("DELETE FROM editorial_decisions WHERE agent_id = ?", (old_id,))
+                        conn.execute("DELETE FROM news_candidates WHERE agent_id = ?", (old_id,))
+                        conn.execute("DELETE FROM feed_posts WHERE agent_id = ?", (old_id,))
+                        conn.execute("DELETE FROM publishing_windows WHERE agent_id = ?", (old_id,))
+                        conn.execute("DELETE FROM agents WHERE agent_id = ?", (old_id,))
 
-            # Insert new agent
-            conn.execute(
-                "INSERT INTO agents (agent_id, name, domain, created_at) VALUES (?, ?, ?, ?)",
-                (agent_id, name, domain, now_utc)
-            )
-            conn.commit()
+                # Insert new agent
+                conn.execute(
+                    "INSERT INTO agents (agent_id, name, domain, created_at) VALUES (?, ?, ?, ?)",
+                    (agent_id, name, domain, now_utc)
+                )
+
+                # Post-insert defense: verify total agents never exceeds max_agents
+                post_rows = conn.execute("SELECT agent_id, name, created_at FROM agents ORDER BY created_at ASC").fetchall()
+                if len(post_rows) > max_agents:
+                    overflow = post_rows[:-max_agents]
+                    for of in overflow:
+                        of_id = of["agent_id"]
+                        conn.execute("DELETE FROM x_publication_records WHERE agent_id = ?", (of_id,))
+                        conn.execute("DELETE FROM editorial_decisions WHERE agent_id = ?", (of_id,))
+                        conn.execute("DELETE FROM news_candidates WHERE agent_id = ?", (of_id,))
+                        conn.execute("DELETE FROM feed_posts WHERE agent_id = ?", (of_id,))
+                        conn.execute("DELETE FROM publishing_windows WHERE agent_id = ?", (of_id,))
+                        conn.execute("DELETE FROM agents WHERE agent_id = ?", (of_id,))
+
+                conn.commit()
 
         logger.info(f"[MEMORY] Registered agent '{name}' ({domain}) with machine id={agent_id}")
         return {"agentId": agent_id, "name": name, "domain": domain, "createdAt": now_utc}
@@ -212,11 +276,11 @@ class AgentMemoryStore:
         Explicitly delete an agent and all owned records across all tables atomically.
         """
         with self._get_connection() as conn:
-            conn.execute("DELETE FROM publishing_windows WHERE agent_id = ?", (agent_id,))
+            conn.execute("DELETE FROM x_publication_records WHERE agent_id = ?", (agent_id,))
+            conn.execute("DELETE FROM editorial_decisions WHERE agent_id = ?", (agent_id,))
             conn.execute("DELETE FROM news_candidates WHERE agent_id = ?", (agent_id,))
             conn.execute("DELETE FROM feed_posts WHERE agent_id = ?", (agent_id,))
-            conn.execute("DELETE FROM editorial_decisions WHERE agent_id = ?", (agent_id,))
-            conn.execute("DELETE FROM x_publication_records WHERE agent_id = ?", (agent_id,))
+            conn.execute("DELETE FROM publishing_windows WHERE agent_id = ?", (agent_id,))
             cur = conn.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
             conn.commit()
             deleted = cur.rowcount > 0
@@ -834,6 +898,20 @@ class AgentMemoryStore:
                 (idempotency_key,)
             ).fetchone()
             return dict(row) if row else None
+
+    def checkpoint_wal(self) -> None:
+        """
+        Explicitly checkpoint and truncate WAL logs to ensure no locked WAL files on shutdown.
+        Flushes all transactions to main database file.
+        """
+        if self.is_turso:
+            return
+        try:
+            with self._get_connection() as conn:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                logger.info("[MEMORY] SQLite WAL checkpointed and truncated successfully on shutdown.")
+        except Exception as e:
+            logger.warning(f"[MEMORY] WAL checkpoint error on shutdown: {e}")
 
 
 # Global persistent memory singleton

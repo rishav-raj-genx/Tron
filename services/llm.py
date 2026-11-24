@@ -422,14 +422,16 @@ class LLMClient:
                         data = response.json()
                         return _extract_content_from_data(data)
                 else:
-                    req = urllib.request.Request(
-                        url,
-                        data=json.dumps(payload).encode("utf-8"),
-                        headers={"Content-Type": "application/json"}
-                    )
-                    with urllib.request.urlopen(req, timeout=45.0) as resp:
-                        data = json.loads(resp.read().decode("utf-8"))
-                        return _extract_content_from_data(data)
+                    def _sync_gemini_fetch():
+                        req = urllib.request.Request(
+                            url,
+                            data=json.dumps(payload).encode("utf-8"),
+                            headers={"Content-Type": "application/json"}
+                        )
+                        with urllib.request.urlopen(req, timeout=45.0) as resp:
+                            return json.loads(resp.read().decode("utf-8"))
+                    data = await asyncio.to_thread(_sync_gemini_fetch)
+                    return _extract_content_from_data(data)
             except urllib.error.HTTPError as exc:
                 if exc.code == 429 and attempt < max_retries:
                     delay = (2 ** attempt) + random.uniform(0.1, 0.5)
@@ -522,15 +524,17 @@ class LLMClient:
                 data = response.json()
                 return _extract_content_from_data(data)
         else:
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers=headers
-            )
-            try:
+            def _sync_groq_fetch():
+                req = urllib.request.Request(
+                    url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers=headers
+                )
                 with urllib.request.urlopen(req, timeout=45.0) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    return _extract_content_from_data(data)
+                    return json.loads(resp.read().decode("utf-8"))
+            try:
+                data = await asyncio.to_thread(_sync_groq_fetch)
+                return _extract_content_from_data(data)
             except urllib.error.HTTPError as exc:
                 raise ProviderError(f"Groq REST HTTP {exc.code}") from exc
             except Exception as exc:

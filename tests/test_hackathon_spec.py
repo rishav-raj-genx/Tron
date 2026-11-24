@@ -28,6 +28,11 @@ import re
 import tempfile
 import unittest
 from datetime import datetime, timezone
+
+os.environ["TESTING"] = "1"
+os.environ["TURSO_DATABASE_URL"] = ""
+os.environ["TURSO_AUTH_TOKEN"] = ""
+os.environ["AGENT_DB_PATH"] = "test_spec_runner.db"
 try:
     from fastapi.testclient import TestClient
     HAS_TESTCLIENT = True
@@ -207,7 +212,9 @@ class TestEchoMindNewsPublisher(unittest.TestCase):
     def test_evaluator_api_contract(self):
         """Test strict API contract for /api/agent/init and /api/agent/feed."""
         # 1. POST /api/agent/init returns {"agentId": "..."}
-        init_res = client.post("/api/agent/init", json={"persona": {"name": "Ada", "domain": "AI Security"}})
+        from unittest.mock import AsyncMock, patch
+        with patch("main.publisher_service.run_publishing_cycle", new_callable=AsyncMock):
+            init_res = client.post("/api/agent/init", json={"persona": {"name": "Ada", "domain": "AI Security"}})
         self.assertEqual(init_res.status_code, 200)
         data = init_res.json()
         self.assertIn("agentId", data)
@@ -238,6 +245,12 @@ class TestEchoMindNewsPublisher(unittest.TestCase):
     def test_source_extraction_and_structured_json_synthesis(self):
         """Verify candidate sources are preserved, non-empty, and correctly populated in synthesized posts."""
         editorial = EditorialEngine(memory_store=self.memory)
+        from unittest.mock import AsyncMock
+        editorial.llm.generate_structured = AsyncMock(return_value={
+            "post_text": "Ada: Critical zero-day in transformer kernel weights analyzed.",
+            "rationale": "High significance CVE with reproducible proofs.",
+            "sources": ["https://arxiv.org/abs/2608.12345", "https://cve.mitre.org/cve-2026-99999"]
+        })
         profile = build_persona_profile("Ada", "AI Security")
 
         candidate = {

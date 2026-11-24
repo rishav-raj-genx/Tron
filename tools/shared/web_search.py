@@ -5,6 +5,7 @@ Provides real-time web search capability for the agent.
 Uses Gemini's Google Search grounding with resilient URL citation extraction.
 """
 
+import asyncio
 import json
 import logging
 import urllib.error
@@ -75,13 +76,15 @@ async def web_search(query: str, **kwargs) -> str:
                     else:
                         data = {}
             else:
-                req = urllib.request.Request(
-                    url,
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"}
-                )
-                with urllib.request.urlopen(req, timeout=30.0) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
+                def _sync_web_search():
+                    req = urllib.request.Request(
+                        url,
+                        data=json.dumps(payload).encode("utf-8"),
+                        headers={"Content-Type": "application/json"}
+                    )
+                    with urllib.request.urlopen(req, timeout=30.0) as resp:
+                        return json.loads(resp.read().decode("utf-8"))
+                data = await asyncio.to_thread(_sync_web_search)
 
             candidates = data.get("candidates", [])
             if candidates:

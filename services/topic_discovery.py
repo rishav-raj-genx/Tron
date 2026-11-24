@@ -158,13 +158,14 @@ class TopicDiscoveryService:
 
     async def _discover_from_arxiv(self, persona_domain: str) -> list[dict[str, Any]]:
         """Fetch a bounded provider-independent live research fallback."""
-        category_query = "cat:cs.AI OR cat:cs.CR" if persona_domain.lower() == "ai security" else "cat:cs.AI"
+        category_query = "cat:cs.CR" if "security" in persona_domain.lower() else "cat:cs.AI"
         query_str = quote(category_query, safe=":")
         url = f"https://export.arxiv.org/api/query?search_query={query_str}&start=0&max_results=5&sortBy=submittedDate&sortOrder=descending"
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-                response = await client.get(url)
+            headers = {"User-Agent": "EchoMindAutonomousAgent/1.0 (https://echomind.ai; contact: info@echomind.ai)"}
+            async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
+                response = await client.get(url, headers=headers)
                 logger.info("[DISCOVERY] arXiv HTTP status=%d", response.status_code)
                 response.raise_for_status()
             candidates = self._parse_arxiv_feed(response.text, persona_domain)

@@ -14,7 +14,9 @@ FastAPI application providing:
 import asyncio
 import logging
 import os
+import time
 import uuid
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -28,11 +30,11 @@ except ImportError:
         def add_job(self, *args, **kwargs): pass
 
 try:
-    from fastapi import FastAPI, HTTPException, Header, Query, Request
+    from fastapi import Depends, FastAPI, HTTPException, Header, Query, Request
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel, Field
+    from pydantic import BaseModel, ConfigDict, Field
     HAS_FASTAPI = True
 except ImportError:
     HAS_FASTAPI = False
@@ -52,6 +54,8 @@ except ImportError:
     def Field(*args, **kwargs): return None
     def Query(*args, **kwargs): return None
     def Header(*args, **kwargs): return None
+    def Depends(*args, **kwargs): return None
+    def ConfigDict(**kwargs): return None
     class HTTPException(Exception): pass
     class Request: pass
     class CORSMiddleware: pass
@@ -73,18 +77,59 @@ logger = logging.getLogger(__name__)
 # Global background scheduler
 scheduler = AsyncIOScheduler()
 
+# Rate limiter for state mutation endpoints (POST/DELETE)
+class MutationRateLimiter:
+    """In-memory sliding-window rate limiter for state-mutating endpoints."""
+    def __init__(self, default_limit_per_minute: int = 30):
+        self.limit = default_limit_per_minute
+        self.requests: dict[str, list[float]] = defaultdict(list)
+        self.lock = asyncio.Lock()
+
+    async def check(self, request: Request):
+        if os.getenv("TESTING") == "1":
+            return
+
+        client_ip = request.headers.get("X-Forwarded-For")
+        if client_ip:
+            client_ip = client_ip.split(",")[0].strip()
+        else:
+            client_ip = request.client.host if request.client else "127.0.0.1"
+
+        now = time.time()
+        window_start = now - 60.0
+
+        async with self.lock:
+            timestamps = self.requests[client_ip]
+            while timestamps and timestamps[0] < window_start:
+                timestamps.pop(0)
+
+            if len(timestamps) >= self.limit:
+                retry_after = int(60.0 - (now - timestamps[0])) + 1
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Rate limit exceeded. Maximum {self.limit} mutations allowed per minute.",
+                    headers={"Retry-After": str(max(1, retry_after))}
+                )
+            timestamps.append(now)
+
+
+mutation_limiter = MutationRateLimiter(default_limit_per_minute=settings.mutation_rate_limit)
+agent_creation_lock = asyncio.Lock()
+
 
 # Request / Response Schemas for Hackathon API Specification
 class PersonaInitPayload(BaseModel):
-    name: str | None = Field(None, description="Human-readable agent persona identity (e.g. 'Ada')")
-    domain: str | None = Field(None, description="Technical domain specialization (e.g. 'AI Security')")
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(None, max_length=100, description="Human-readable agent persona identity (e.g. 'Ada')")
+    domain: str | None = Field(None, max_length=100, description="Technical domain specialization (e.g. 'AI Security')")
 
 
 class AgentInitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     persona: PersonaInitPayload | None = None
-    name: str | None = None
-    domain: str | None = None
-    agent_name: str | None = None
+    name: str | None = Field(None, max_length=100)
+    domain: str | None = Field(None, max_length=100)
+    agent_name: str | None = Field(None, max_length=100)
 
 
 class AgentInitResponse(BaseModel):
@@ -148,8 +193,8 @@ async def lifespan(app: FastAPI):
     """Manage application startup and shutdown with zero-failure guarantee."""
     logger.info("[APP] Starting Autonomous AI Persona News Publisher...")
 
-    # Start the background task scheduler
-    if not scheduler.running:
+    # Start the background task scheduler (skipped during unit testing)
+    if not scheduler.running and os.getenv("TESTING") != "1":
         # Schedule periodic background discovery and evaluation loop (~35 min + jitter)
         # Governed by publishing windows in AutonomousPublisherService
         # HIGH-002: max_instances=1 and coalesce=True prevents overlapping job execution
@@ -177,25 +222,41 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    logger.info("[APP] Shutting down application...")
+    logger.info("[APP] Shutting down application (SIGTERM / graceful stop)...")
     if scheduler.running:
         scheduler.shutdown(wait=False)
+        logger.info("[APP] Background scheduler stopped.")
+    try:
+        memory_store.checkpoint_wal()
+    except Exception as e:
+        logger.warning(f"[APP] WAL checkpoint during shutdown: {e}")
     logger.info("[APP] Application shutdown complete.")
 
+
+# Documentation endpoints gated by ENABLE_DOCS environment flag
+docs_url = "/docs" if settings.enable_docs else None
+redoc_url = "/redoc" if settings.enable_docs else None
+openapi_url = "/openapi.json" if settings.enable_docs else None
 
 app = FastAPI(
     title="Autonomous AI & Technology Persona News Publisher",
     description="Quality-driven autonomous news publisher with ~35-min discovery loops (±5-min jitter) and configuration-driven publishing windows",
     version="3.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url=docs_url,
+    redoc_url=redoc_url,
+    openapi_url=openapi_url
 )
 
-# Enable CORS for browser frontend clients
+# Enable CORS with explicit origins
+cors_origins = settings.cors_origins
+allow_credentials = False if "*" in cors_origins else True
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=cors_origins,
+    allow_credentials=allow_credentials,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -220,7 +281,7 @@ async def serve_dashboard():
 # ============================================================================
 
 @app.get("/api/agents", response_model=AgentListResponse, status_code=200)
-async def list_all_agents(activeAgentId: str | None = Query(None, description="Currently active dashboard agent")):
+async def list_all_agents(activeAgentId: str | None = Query(None, max_length=100, description="Currently active dashboard agent")):
     """
     List all active autonomous agents (up to MAX_AGENTS=5) with their real-time
     publishing window, candidate count, current leader status, and configured window duration.
@@ -239,7 +300,7 @@ async def list_all_agents(activeAgentId: str | None = Query(None, description="C
         raise HTTPException(status_code=500, detail="Internal server error listing agents.")
 
 
-@app.post("/api/agent/init", response_model=AgentInitResponse, status_code=200)
+@app.post("/api/agent/init", response_model=AgentInitResponse, status_code=200, dependencies=[Depends(mutation_limiter.check)])
 async def init_agent(payload: AgentInitRequest):
     """
     Initialize an autonomous persona with a human-readable name and domain.
@@ -269,14 +330,17 @@ async def init_agent(payload: AgentInitRequest):
         # Generate unique machine agentId (e.g. agent-8a1b2c3d)
         agent_id = f"agent-{uuid.uuid4().hex[:8]}"
 
-        # Register in SQLite memory store with atomic FIFO 5-agent rotation
-        memory_store.register_agent(agent_id, persona_name, persona_domain, max_agents=settings.max_agents)
+        # Application-level and DB-level concurrency lock for 5-agent limit
+        async with agent_creation_lock:
+            # Register in SQLite memory store with atomic FIFO 5-agent rotation
+            memory_store.register_agent(agent_id, persona_name, persona_domain, max_agents=settings.max_agents)
 
-        # Create initial publishing window (duration driven by settings.publish_window_minutes)
-        memory_store.create_window(agent_id, duration_minutes=settings.publish_window_minutes)
+            # Create initial publishing window (duration driven by settings.publish_window_minutes)
+            memory_store.create_window(agent_id, duration_minutes=settings.publish_window_minutes)
 
-        # Trigger initial discovery cycle in background
-        asyncio.create_task(publisher_service.run_publishing_cycle(agent_id))
+        # Trigger initial discovery cycle in background (skipped during automated testing)
+        if os.getenv("TESTING") != "1":
+            asyncio.create_task(publisher_service.run_publishing_cycle(agent_id))
 
         logger.info(f"[API] Initialized agent '{persona_name}' in domain '{persona_domain}' with machine id={agent_id}")
         return AgentInitResponse(agentId=agent_id)
@@ -288,10 +352,12 @@ async def init_agent(payload: AgentInitRequest):
         raise HTTPException(status_code=500, detail="Internal server error during agent initialization.")
 
 
-@app.delete("/api/agent/{agent_id}", status_code=200)
+@app.delete("/api/agent/{agent_id}", status_code=200, dependencies=[Depends(mutation_limiter.check)])
 async def delete_single_agent(agent_id: str):
     """Explicitly remove an agent and its owned data."""
     try:
+        if not agent_id or len(agent_id) > 100:
+            raise HTTPException(status_code=400, detail="Invalid agent_id parameter.")
         deleted = memory_store.delete_agent(agent_id.strip())
         if not deleted:
             raise HTTPException(status_code=404, detail="Agent not found.")
@@ -306,7 +372,7 @@ async def delete_single_agent(agent_id: str):
 @app.get("/api/agent/feed", response_model=FeedResponse, status_code=200)
 @app.get("/api/feed", response_model=FeedResponse, status_code=200, include_in_schema=False)
 @app.get("/feed", response_model=FeedResponse, status_code=200, include_in_schema=False)
-async def get_agent_feed(agentId: str | None = Query(None, description="The unique agent identifier returned during initialization")):
+async def get_agent_feed(agentId: str | None = Query(None, max_length=100, description="The unique agent identifier returned during initialization")):
     """
     Get the published feed for a given agent (or all published posts if agentId not provided).
 
@@ -329,7 +395,7 @@ async def get_agent_feed(agentId: str | None = Query(None, description="The uniq
 
 
 @app.get("/api/agent/status", response_model=AgentStatusResponse, status_code=200)
-async def get_agent_status(agentId: str = Query(..., description="The unique agent identifier")):
+async def get_agent_status(agentId: str = Query(..., max_length=100, description="The unique agent identifier")):
     """
     Get the real-time status of an agent including current window, candidate count,
     current leader story, and last publication status.
@@ -394,6 +460,7 @@ async def get_agent_status(agentId: str = Query(..., description="The unique age
 
 @app.get("/health")
 @app.get("/healthz")
+@app.get("/readyz")
 async def health_check():
     """Lightweight health check endpoint with system status."""
     return {
@@ -424,9 +491,9 @@ async def metrics():
     }
 
 
-@app.post("/api/agent/cycle")
+@app.post("/api/agent/cycle", dependencies=[Depends(mutation_limiter.check)])
 async def trigger_agent_cycle(
-    agentId: str = Query(..., description="Agent ID to trigger immediately"),
+    agentId: str = Query(..., max_length=100, description="Agent ID to trigger immediately"),
     x_admin_key: str | None = Header(None, alias="X-Admin-Key")
 ):
     """Manual cycle trigger endpoint for testing or simulated fast-forwarding."""
@@ -438,10 +505,10 @@ async def trigger_agent_cycle(
     return result
 
 
-@app.post("/api/agent/close-window")
+@app.post("/api/agent/close-window", dependencies=[Depends(mutation_limiter.check)])
 async def trigger_window_close(
-    agentId: str = Query(..., description="Agent ID"),
-    windowId: str = Query(..., description="Window ID to close and evaluate"),
+    agentId: str = Query(..., max_length=100, description="Agent ID"),
+    windowId: str = Query(..., max_length=100, description="Window ID to close and evaluate"),
     x_admin_key: str | None = Header(None, alias="X-Admin-Key")
 ):
     """Manual window close trigger endpoint for testing window evaluation."""
@@ -457,4 +524,4 @@ if __name__ == "__main__":
     import os
     import uvicorn
     port = int(os.getenv("PORT", "8080"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port, workers=1)
