@@ -10,11 +10,16 @@ Tests cover:
 - Structured output validation and error handling.
 """
 
-import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from services.llm import LLMClient, ProviderError, _clean_and_parse_json, _extract_content_from_data, _validate_structured_response
+from services.llm import (
+    LLMClient,
+    ProviderError,
+    _clean_and_parse_json,
+    _extract_content_from_data,
+    _validate_structured_response,
+)
 
 
 class TestLLMService(unittest.IsolatedAsyncioTestCase):

@@ -10,7 +10,7 @@ Tests cover:
 """
 
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from services.editorial_engine import EditorialEngine
 from utils.duplicate import (

@@ -1,44 +1,52 @@
-# API Keys and Configuration Guide: EchoMind News Publisher
+# API Keys and Configuration Guide: Tron (Autonoma)
 
-This guide explains how to configure API keys for running the EchoMind autonomous news publisher.
+This guide explains how to configure API credentials and storage for running Tron (Autonoma).
 
 ---
 
-## 1. OpenRouter API Key (Required for Live Operations)
+## 1. Google Gemini API Key (Primary LLM & Search Grounding)
 
-OpenRouter provides access to frontier LLMs and real-time live web search plugins through a single unified API.
+Tron uses Google Gemini as its primary inference engine and live Google Search grounding provider.
 
 ### Obtaining Your Key:
-1. Go to [openrouter.ai](https://openrouter.ai)
-2. Sign up and navigate to **Keys** (`openrouter.ai/keys`)
-3. Create a new API key and copy its value.
-4. Add it to your `.env` file or environment variables:
+1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey).
+2. Sign in with your Google account and click **Create API Key**.
+3. Copy the key and add it to your `.env` file:
    ```bash
-   OPENROUTER_API_KEY=sk-or-v1-...
+   GEMINI_API_KEY=your_gemini_api_key_here
+   GEMINI_MODEL=gemini-2.0-flash
    ```
 
 ---
 
-## 2. Official X / Twitter API Credentials (Required for X Publishing)
+## 2. Groq Cloud API Key (Secondary Fallback LLM)
 
-To publish verified news stories to X/Twitter at the end of each 2-hour window:
-1. Go to [developer.x.com](https://developer.x.com)
-2. Create a project and developer app with **Read and Write** permissions.
-3. Configure your environment variables:
+Tron automatically fails over to Groq if Gemini encounters transient rate limits (HTTP 429) or service outages.
+
+### Obtaining Your Key:
+1. Go to [Groq Console](https://console.groq.com/keys).
+2. Sign up or log in, then create an API key.
+3. Add it to your `.env` file:
    ```bash
-   X_API_KEY=your-consumer-api-key
-   X_API_SECRET=your-consumer-api-secret
-   X_ACCESS_TOKEN=your-access-token
-   X_ACCESS_TOKEN_SECRET=your-access-token-secret
-   X_BEARER_TOKEN=your-bearer-token
+   GROQ_API_KEY=your_groq_api_key_here
+   GROQ_MODEL=llama-3.3-70b-versatile
    ```
 
 ---
 
 ## 3. Storage Configuration (SQLite WAL Mode)
 
-The system uses embedded SQLite with Write-Ahead Logging (WAL) mode, storing all data in the local application filesystem:
+Tron stores all agent personas, publishing windows, news candidates, editorial decisions, and feed posts in an embedded SQLite database using Write-Ahead Logging (`WAL`) mode with a 15-second busy timeout:
 
 ```bash
-AGENT_DB_PATH=./agent_memory.db
+AGENT_DB_PATH=agent_memory.db
+DATABASE_URL=sqlite:///agent_memory.db
 ```
+
+No external database servers (PostgreSQL, MySQL, Redis) or persistent disks are required.
+
+---
+
+## 4. Legacy Service Note
+
+Earlier prototype iterations referenced `OPENROUTER_API_KEY` and Twitter/X credentials (`X_API_KEY`, etc.). The active Tron runtime operates entirely on direct Google Gemini + Groq APIs with embedded SQLite feed delivery, eliminating third-party routing intermediaries and social media API dependencies.

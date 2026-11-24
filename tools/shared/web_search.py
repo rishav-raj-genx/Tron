@@ -11,7 +11,6 @@ import logging
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
 
 try:
     import httpx
@@ -21,6 +20,7 @@ except ImportError:
 
 from config.settings import settings
 from utils.api import sanitize_url_credentials
+from utils.url_validator import sanitize_source_urls
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,8 @@ async def web_search(query: str, **kwargs) -> str:
             }
 
             if HAS_HTTPX:
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                timeout = httpx.Timeout(20.0, connect=5.0, read=15.0)
+                async with httpx.AsyncClient(timeout=timeout) as client:
                     response = await client.post(url, json=payload)
                     if response.status_code == 200:
                         data = response.json()
@@ -82,7 +83,7 @@ async def web_search(query: str, **kwargs) -> str:
                         data=json.dumps(payload).encode("utf-8"),
                         headers={"Content-Type": "application/json"}
                     )
-                    with urllib.request.urlopen(req, timeout=30.0) as resp:
+                    with urllib.request.urlopen(req, timeout=20.0) as resp:
                         return json.loads(resp.read().decode("utf-8"))
                 data = await asyncio.to_thread(_sync_web_search)
 
@@ -90,16 +91,16 @@ async def web_search(query: str, **kwargs) -> str:
             if candidates:
                 content_parts = candidates[0].get("content", {}).get("parts", [])
                 content = " ".join([p.get("text", "") for p in content_parts if "text" in p])
-                sources = []
+                raw_sources = []
                 grounding = candidates[0].get("groundingMetadata", {})
                 for chunk in grounding.get("groundingChunks", []):
                     web = chunk.get("web", {})
                     uri = web.get("uri")
                     if uri and uri.startswith("http"):
-                        sources.append(uri)
-                sources = list(dict.fromkeys(sources))
+                        raw_sources.append(uri)
+                sources = sanitize_source_urls(raw_sources)
                 if not sources:
-                    logger.warning("[WEB_SEARCH] Gemini returned no grounding source URLs")
+                    logger.warning("[WEB_SEARCH] Gemini returned no valid grounding source URLs")
                     return "Error: Gemini live search returned no verified sources"
                 logger.info(f"[WEB_SEARCH] Completed via Gemini search grounding: {len(sources)} sources found")
                 return f"Search results:\n{content}\n\nSources: {len(sources)}\n" + "\n".join(sources)

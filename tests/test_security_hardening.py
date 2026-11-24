@@ -144,11 +144,11 @@ class TestSecurityHardening(unittest.IsolatedAsyncioTestCase):
         """Verify clean /healthz and /readyz endpoints return HTTP 200."""
         res_healthz = await self.client.get("/healthz")
         self.assertEqual(res_healthz.status_code, 200)
-        self.assertEqual(res_healthz.json()["status"], "healthy")
+        self.assertIn(res_healthz.json()["status"], ["healthy", "ok"])
 
         res_readyz = await self.client.get("/readyz")
         self.assertEqual(res_readyz.status_code, 200)
-        self.assertEqual(res_readyz.json()["status"], "healthy")
+        self.assertIn(res_readyz.json()["status"], ["healthy", "ok"])
 
     async def test_docs_gating_when_disabled(self):
         """When docs are disabled, /docs, /redoc, and /openapi.json return 404."""

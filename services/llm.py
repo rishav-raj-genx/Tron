@@ -40,8 +40,13 @@ except ImportError:
 from config.models import GEMINI_MODEL, GROQ_MODEL
 from config.settings import settings
 from utils.api import sanitize_url_credentials
+from utils.circuit_breaker import gemini_breaker, groq_breaker, is_transient_error
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_CONNECT_TIMEOUT = 10.0
+DEFAULT_READ_TIMEOUT = 25.0
+DEFAULT_TOTAL_TIMEOUT = 30.0
 
 # Optional SDK Imports
 try:
@@ -52,7 +57,6 @@ except ImportError:
     HAS_GENAI_SDK = False
 
 try:
-    import groq
     from groq import AsyncGroq
     HAS_GROQ_SDK = True
 except ImportError:
@@ -108,7 +112,7 @@ def _clean_and_parse_json(text: str) -> dict[str, Any]:
         clean = clean.split("```json", 1)[1].split("```", 1)[0].strip()
     elif "```" in clean:
         clean = clean.split("```", 1)[1].split("```", 1)[0].strip()
-    
+
     # Match outermost JSON object if extra text exists
     match = re.search(r"(\{.*\})", clean, re.DOTALL)
     if match:
@@ -231,16 +235,31 @@ class LLMClient:
             {"role": "user", "content": user}
         ]
 
-        # Try Gemini Primary
-        try:
-            return await self._call_gemini_text(system=system, user=user)
-        except Exception as exc:
-            logger.warning(f"[LLM] Gemini primary request failed ({sanitize_url_credentials(exc)}). Attempting Groq fallback...")
+        # 1. Try Gemini Primary (if circuit not OPEN)
+        if not gemini_breaker.can_execute():
+            logger.warning("[LLM] Gemini circuit breaker is OPEN. Fast-failing over to Groq fallback.")
+        else:
+            try:
+                res = await self._call_gemini_text(system=system, user=user)
+                gemini_breaker.record_success()
+                return res
+            except Exception as exc:
+                if is_transient_error(exc):
+                    gemini_breaker.record_failure(exc)
+                logger.warning(f"[LLM] Gemini primary request failed ({sanitize_url_credentials(exc)}). Attempting Groq fallback...")
 
-        # Try Groq Fallback
+        # 2. Try Groq Fallback (if circuit not OPEN)
+        if not groq_breaker.can_execute():
+            logger.error("[LLM] Groq circuit breaker is OPEN. Both providers unavailable.")
+            raise ProviderError("Both Gemini and Groq providers failed (circuits OPEN)", provider="Groq")
+
         try:
-            return await self._call_groq_text(messages=messages)
+            res = await self._call_groq_text(messages=messages)
+            groq_breaker.record_success()
+            return res
         except Exception as exc:
+            if is_transient_error(exc):
+                groq_breaker.record_failure(exc)
             logger.error(f"[LLM] Both Gemini and Groq providers failed: {sanitize_url_credentials(exc)}")
             if isinstance(exc, ProviderError):
                 raise
@@ -266,18 +285,33 @@ class LLMClient:
             {"role": "user", "content": user}
         ]
 
-        # Try Gemini Primary
-        try:
-            raw_text = await self._call_gemini_text(system=system, user=user, target_schema=target_schema, is_json=True)
-            return _validate_structured_response(_clean_and_parse_json(raw_text), target_schema)
-        except Exception as exc:
-            logger.warning(f"[LLM] Gemini primary structured generation failed ({sanitize_url_credentials(exc)}). Attempting Groq fallback...")
+        # 1. Try Gemini Primary (if circuit not OPEN)
+        if not gemini_breaker.can_execute():
+            logger.warning("[LLM] Gemini circuit breaker is OPEN. Fast-failing over to Groq fallback.")
+        else:
+            try:
+                raw_text = await self._call_gemini_text(system=system, user=user, target_schema=target_schema, is_json=True)
+                validated = _validate_structured_response(_clean_and_parse_json(raw_text), target_schema)
+                gemini_breaker.record_success()
+                return validated
+            except Exception as exc:
+                if is_transient_error(exc):
+                    gemini_breaker.record_failure(exc)
+                logger.warning(f"[LLM] Gemini primary structured generation failed ({sanitize_url_credentials(exc)}). Attempting Groq fallback...")
 
-        # Try Groq Fallback
+        # 2. Try Groq Fallback (if circuit not OPEN)
+        if not groq_breaker.can_execute():
+            logger.error("[LLM] Groq circuit breaker is OPEN. Both providers unavailable.")
+            raise ProviderError("Both Gemini and Groq providers failed (circuits OPEN)", provider="Groq")
+
         try:
             raw_text = await self._call_groq_text(messages=messages, target_schema=target_schema, is_json=True)
-            return _validate_structured_response(_clean_and_parse_json(raw_text), target_schema)
+            validated = _validate_structured_response(_clean_and_parse_json(raw_text), target_schema)
+            groq_breaker.record_success()
+            return validated
         except Exception as exc:
+            if is_transient_error(exc):
+                groq_breaker.record_failure(exc)
             logger.error(f"[LLM] Both Gemini and Groq providers failed structured generation: {sanitize_url_credentials(exc)}")
             if isinstance(exc, ProviderError):
                 raise
@@ -303,28 +337,45 @@ class LLMClient:
                 gemini_role = "model" if role == "assistant" else "user"
                 chat_contents.append({"role": gemini_role, "parts": [{"text": content}]})
 
-        # Try Gemini Primary
-        try:
-            raw_text = await self._call_gemini_raw(
-                system=system_prompt,
-                contents=chat_contents if chat_contents else [{"role": "user", "parts": [{"text": ""}]}],
-                messages=messages,
-                target_schema=response_format,
-                is_json=is_json
-            )
-            if is_json:
-                return _validate_structured_response(_clean_and_parse_json(raw_text), response_format or {})
-            return {"content": raw_text}
-        except Exception as exc:
-            logger.warning(f"[LLM] Gemini primary chat failed ({sanitize_url_credentials(exc)}). Attempting Groq fallback...")
+        # 1. Try Gemini Primary (if circuit not OPEN)
+        if not gemini_breaker.can_execute():
+            logger.warning("[LLM] Gemini circuit breaker is OPEN. Fast-failing over to Groq fallback.")
+        else:
+            try:
+                raw_text = await self._call_gemini_raw(
+                    system=system_prompt,
+                    contents=chat_contents if chat_contents else [{"role": "user", "parts": [{"text": ""}]}],
+                    messages=messages,
+                    target_schema=response_format,
+                    is_json=is_json
+                )
+                if is_json:
+                    validated = _validate_structured_response(_clean_and_parse_json(raw_text), response_format or {})
+                    gemini_breaker.record_success()
+                    return validated
+                gemini_breaker.record_success()
+                return {"content": raw_text}
+            except Exception as exc:
+                if is_transient_error(exc):
+                    gemini_breaker.record_failure(exc)
+                logger.warning(f"[LLM] Gemini primary chat failed ({sanitize_url_credentials(exc)}). Attempting Groq fallback...")
 
-        # Try Groq Fallback
+        # 2. Try Groq Fallback (if circuit not OPEN)
+        if not groq_breaker.can_execute():
+            logger.error("[LLM] Groq circuit breaker is OPEN. Both providers unavailable.")
+            raise ProviderError("Both Gemini and Groq providers failed (circuits OPEN)", provider="Groq")
+
         try:
             raw_text = await self._call_groq_text(messages=messages, target_schema=response_format, is_json=is_json)
             if is_json:
-                return _validate_structured_response(_clean_and_parse_json(raw_text), response_format or {})
+                validated = _validate_structured_response(_clean_and_parse_json(raw_text), response_format or {})
+                groq_breaker.record_success()
+                return validated
+            groq_breaker.record_success()
             return {"content": raw_text}
         except Exception as exc:
+            if is_transient_error(exc):
+                groq_breaker.record_failure(exc)
             logger.error(f"[LLM] Both Gemini and Groq providers failed chat: {sanitize_url_credentials(exc)}")
             if isinstance(exc, ProviderError):
                 raise
@@ -384,14 +435,17 @@ class LLMClient:
                     parts_text = " ".join([p.get("text", "") for p in item.get("parts", [])])
                     sdk_contents.append(parts_text)
 
-                response = await client.aio.models.generate_content(
-                    model=model_name,
-                    contents=sdk_contents if len(sdk_contents) > 1 else (sdk_contents[0] if sdk_contents else ""),
-                    config=config
+                response = await asyncio.wait_for(
+                    client.aio.models.generate_content(
+                        model=model_name,
+                        contents=sdk_contents if len(sdk_contents) > 1 else (sdk_contents[0] if sdk_contents else ""),
+                        config=config
+                    ),
+                    timeout=DEFAULT_TOTAL_TIMEOUT
                 )
                 if response and response.text:
                     return response.text
-                raise ProviderError("Gemini SDK returned empty response")
+                raise ProviderError("Gemini SDK returned empty response", provider="Gemini")
             except Exception as exc:
                 logger.debug(f"[LLM] google-genai SDK call failed, attempting REST fallback: {exc}")
 
@@ -416,9 +470,15 @@ class LLMClient:
         for attempt in range(max_retries + 1):
             try:
                 if HAS_HTTPX:
-                    async with httpx.AsyncClient(timeout=45.0) as client:
+                    timeout = httpx.Timeout(DEFAULT_TOTAL_TIMEOUT, connect=DEFAULT_CONNECT_TIMEOUT, read=DEFAULT_READ_TIMEOUT)
+                    async with httpx.AsyncClient(timeout=timeout) as client:
                         response = await client.post(url, json=payload)
-                        response.raise_for_status()
+                        if response.status_code >= 400:
+                            raise ProviderError(
+                                f"Gemini REST HTTP {response.status_code}",
+                                provider="Gemini",
+                                status_code=response.status_code
+                            )
                         data = response.json()
                         return _extract_content_from_data(data)
                 else:
@@ -428,22 +488,22 @@ class LLMClient:
                             data=json.dumps(payload).encode("utf-8"),
                             headers={"Content-Type": "application/json"}
                         )
-                        with urllib.request.urlopen(req, timeout=45.0) as resp:
+                        with urllib.request.urlopen(req, timeout=DEFAULT_TOTAL_TIMEOUT) as resp:
                             return json.loads(resp.read().decode("utf-8"))
                     data = await asyncio.to_thread(_sync_gemini_fetch)
                     return _extract_content_from_data(data)
             except urllib.error.HTTPError as exc:
-                if exc.code == 429 and attempt < max_retries:
+                p_err = ProviderError(f"Gemini REST HTTP {exc.code}", provider="Gemini", status_code=exc.code)
+                if attempt < max_retries and is_transient_error(p_err):
                     delay = (2 ** attempt) + random.uniform(0.1, 0.5)
-                    logger.warning(f"[LLM] Gemini REST rate limited (429). Retrying in {delay:.2f}s (attempt {attempt + 1}/{max_retries})...")
+                    logger.warning(f"[LLM] Gemini REST transient error ({exc.code}). Retrying in {delay:.2f}s (attempt {attempt + 1}/{max_retries})...")
                     await asyncio.sleep(delay)
                     continue
-                raise ProviderError(f"Gemini REST HTTP {exc.code}", provider="Gemini", status_code=exc.code) from exc
+                raise p_err from exc
             except Exception as exc:
-                is_rate_limit = "429" in str(exc) or "ResourceExhausted" in str(exc) or "Too Many Requests" in str(exc)
-                if is_rate_limit and attempt < max_retries:
+                if attempt < max_retries and is_transient_error(exc):
                     delay = (2 ** attempt) + random.uniform(0.1, 0.5)
-                    logger.warning(f"[LLM] Gemini rate limited (429). Retrying in {delay:.2f}s (attempt {attempt + 1}/{max_retries})...")
+                    logger.warning(f"[LLM] Gemini transient error ({sanitize_url_credentials(exc)}). Retrying in {delay:.2f}s (attempt {attempt + 1}/{max_retries})...")
                     await asyncio.sleep(delay)
                     continue
                 if isinstance(exc, ProviderError):
@@ -479,29 +539,6 @@ class LLMClient:
             else:
                 groq_messages.insert(0, {"role": "system", "content": "You are a helpful AI news synthesis assistant." + json_instruction})
 
-        # 1. Try official Groq SDK if key present and SDK available
-        if api_key and HAS_GROQ_SDK:
-            try:
-                client = AsyncGroq(api_key=api_key)
-                kwargs: dict[str, Any] = {
-                    "model": self.groq_model,
-                    "messages": groq_messages,
-                    "max_tokens": 1200,
-                    "temperature": 0.7,
-                }
-                if is_json:
-                    kwargs["response_format"] = {"type": "json_object"}
-
-                response = await client.chat.completions.create(**kwargs)
-                if response and response.choices and response.choices[0].message:
-                    content = response.choices[0].message.content or ""
-                    if not content:
-                        raise ProviderError("Groq response contains empty content")
-                    return content
-            except Exception as exc:
-                logger.debug(f"[LLM] Groq SDK call failed, attempting REST fallback: {exc}")
-
-        # 2. REST API Fallback
         effective_key = api_key or "test-key"
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
@@ -517,25 +554,73 @@ class LLMClient:
         if is_json:
             payload["response_format"] = {"type": "json_object"}
 
-        if HAS_HTTPX:
-            async with httpx.AsyncClient(timeout=45.0) as client:
-                response = await client.post(url, headers=headers, json=payload)
-                response.raise_for_status()
-                data = response.json()
-                return _extract_content_from_data(data)
-        else:
-            def _sync_groq_fetch():
-                req = urllib.request.Request(
-                    url,
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers=headers
-                )
-                with urllib.request.urlopen(req, timeout=45.0) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
+        max_retries = 2
+        for attempt in range(max_retries + 1):
             try:
-                data = await asyncio.to_thread(_sync_groq_fetch)
-                return _extract_content_from_data(data)
+                # 1. Try official Groq SDK if key present and SDK available
+                if api_key and HAS_GROQ_SDK:
+                    try:
+                        client = AsyncGroq(api_key=api_key)
+                        kwargs: dict[str, Any] = {
+                            "model": self.groq_model,
+                            "messages": groq_messages,
+                            "max_tokens": 1200,
+                            "temperature": 0.7,
+                        }
+                        if is_json:
+                            kwargs["response_format"] = {"type": "json_object"}
+
+                        response = await asyncio.wait_for(
+                            client.chat.completions.create(**kwargs),
+                            timeout=DEFAULT_TOTAL_TIMEOUT
+                        )
+                        if response and response.choices and response.choices[0].message:
+                            content = response.choices[0].message.content or ""
+                            if not content:
+                                raise ProviderError("Groq response contains empty content", provider="Groq")
+                            return content
+                    except Exception as exc:
+                        if attempt == 0:
+                            logger.debug(f"[LLM] Groq SDK call failed, attempting REST fallback: {exc}")
+
+                # 2. REST API
+                if HAS_HTTPX:
+                    timeout = httpx.Timeout(DEFAULT_TOTAL_TIMEOUT, connect=DEFAULT_CONNECT_TIMEOUT, read=DEFAULT_READ_TIMEOUT)
+                    async with httpx.AsyncClient(timeout=timeout) as client:
+                        response = await client.post(url, headers=headers, json=payload)
+                        if response.status_code >= 400:
+                            raise ProviderError(
+                                f"Groq REST HTTP {response.status_code}",
+                                provider="Groq",
+                                status_code=response.status_code
+                            )
+                        data = response.json()
+                        return _extract_content_from_data(data)
+                else:
+                    def _sync_groq_fetch():
+                        req = urllib.request.Request(
+                            url,
+                            data=json.dumps(payload).encode("utf-8"),
+                            headers=headers
+                        )
+                        with urllib.request.urlopen(req, timeout=DEFAULT_TOTAL_TIMEOUT) as resp:
+                            return json.loads(resp.read().decode("utf-8"))
+                    data = await asyncio.to_thread(_sync_groq_fetch)
+                    return _extract_content_from_data(data)
             except urllib.error.HTTPError as exc:
-                raise ProviderError(f"Groq REST HTTP {exc.code}") from exc
+                p_err = ProviderError(f"Groq REST HTTP {exc.code}", provider="Groq", status_code=exc.code)
+                if attempt < max_retries and is_transient_error(p_err):
+                    delay = (2 ** attempt) + random.uniform(0.1, 0.5)
+                    logger.warning(f"[LLM] Groq REST transient error ({exc.code}). Retrying in {delay:.2f}s (attempt {attempt + 1}/{max_retries})...")
+                    await asyncio.sleep(delay)
+                    continue
+                raise p_err from exc
             except Exception as exc:
-                raise ProviderError(f"Groq REST error: {exc}") from exc
+                if attempt < max_retries and is_transient_error(exc):
+                    delay = (2 ** attempt) + random.uniform(0.1, 0.5)
+                    logger.warning(f"[LLM] Groq transient error ({sanitize_url_credentials(exc)}). Retrying in {delay:.2f}s (attempt {attempt + 1}/{max_retries})...")
+                    await asyncio.sleep(delay)
+                    continue
+                if isinstance(exc, ProviderError):
+                    raise
+                raise ProviderError(f"Groq REST error: {sanitize_url_credentials(exc)}", provider="Groq") from exc

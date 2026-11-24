@@ -13,7 +13,7 @@ import sys
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
-from config.settings import Settings, settings
+from config.settings import Settings
 from services.editorial_engine import EditorialEngine
 
 

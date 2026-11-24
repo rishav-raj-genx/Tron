@@ -11,6 +11,7 @@ Provides thread-safe, resilient persistence using SQLite with WAL mode, storing:
 - Enforces MAX_AGENTS=5 server-side atomic FIFO rotation.
 """
 
+import base64
 import hashlib
 import json
 import logging
@@ -18,15 +19,39 @@ import os
 import sqlite3
 import threading
 import uuid
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+try:
+    from datetime import UTC
+except ImportError:
+    UTC = timezone.utc
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 from config.settings import settings
 from services.turso_client import TursoConnection
 
 logger = logging.getLogger(__name__)
+
+
+def encode_cursor(created_at: str, post_id: str) -> str:
+    """Encode created_at timestamp and post_id into an opaque URL-safe cursor string."""
+    raw = f"{created_at}|{post_id}"
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def decode_cursor(cursor: str) -> tuple[str, str] | None:
+    """Decode an opaque URL-safe cursor into (created_at, post_id)."""
+    try:
+        padding = "=" * ((4 - len(cursor) % 4) % 4)
+        raw = base64.urlsafe_b64decode((cursor + padding).encode("ascii")).decode("utf-8")
+        parts = raw.split("|", 1)
+        if len(parts) == 2 and parts[0] and parts[1]:
+            return parts[0], parts[1]
+    except Exception:
+        return None
+    return None
 
 # Default SQLite database path in workspace
 DEFAULT_DB_PATH = os.getenv("AGENT_DB_PATH", str(Path(__file__).parent.parent / "agent_memory.db"))
@@ -101,6 +126,10 @@ class AgentMemoryStore:
             conn.execute("PRAGMA journal_mode=WAL;")
             # SQLite-level busy timeout (ms) — retry internally before raising "database is locked"
             conn.execute("PRAGMA busy_timeout=15000;")
+            # Normal synchronous mode: checkpoints flush safely without excessive fsync calls
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            # Enforce foreign key constraints
+            conn.execute("PRAGMA foreign_keys=ON;")
             try:
                 yield conn
             finally:
@@ -194,13 +223,17 @@ class AgentMemoryStore:
                 )
             """)
 
-            # Create performance and uniqueness indexes
+            # Create performance, deduplication, and keyset-pagination composite indexes
             conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_agent_time ON feed_posts(agent_id, created_at DESC);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_agent_created_id ON feed_posts(agent_id, created_at DESC, id DESC);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_created_id ON feed_posts(created_at DESC, id DESC);")
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_posts_agent_topic_hash ON feed_posts(agent_id, topic_hash);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_decisions_agent ON editorial_decisions(agent_id, evaluated_at DESC);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_decisions_agent_title ON editorial_decisions(agent_id, topic_title);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_windows_agent ON publishing_windows(agent_id, started_at DESC);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_candidates_window ON news_candidates(window_id, score DESC);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_candidates_agent_hash ON news_candidates(agent_id, topic_hash);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_candidates_agent_hash_status ON news_candidates(agent_id, topic_hash, status);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_x_pub_window ON x_publication_records(window_id);")
             conn.commit()
             if self.is_turso:
@@ -231,7 +264,7 @@ class AgentMemoryStore:
             with self._get_connection() as conn:
                 # Query existing agents ordered strictly by persisted creation timestamp ASC
                 rows = conn.execute("SELECT agent_id, name, created_at FROM agents ORDER BY created_at ASC").fetchall()
-                
+
                 # Enforce 5-agent limit: rotate out oldest agent if at or above capacity
                 if len(rows) >= max_agents:
                     excess_count = (len(rows) - max_agents) + 1
@@ -393,7 +426,7 @@ class AgentMemoryStore:
             post_id = f"p-{uuid.uuid4().hex[:8]}"
 
         if not created_at:
-            created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            created_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         if not topic_hash:
             topic_hash = self.compute_topic_hash(text)
@@ -440,38 +473,95 @@ class AgentMemoryStore:
                     }
                 return None
 
-    def get_feed(self, agent_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
-        """
-        Get posts in reverse chronological order (newest first).
-        Returns list of posts with id, createdAt (ISO 8601 UTC string), text, rationale, sources (list of strings).
-        If agent_id is None, returns posts across all agents.
-        If no posts exist, returns an empty list [].
+    def check_liveness(self) -> dict[str, Any]:
+        """Execute fast SQLite liveness and WAL health verification.
+
+        Verifies connectivity via SELECT 1, checks PRAGMA journal_mode, and counts active agents.
+        Raises sqlite3.OperationalError or sqlite3.Error if database is unreachable or corrupted.
         """
         with self._get_connection() as conn:
+            ping = conn.execute("SELECT 1;").fetchone()
+            if not ping or ping[0] != 1:
+                raise sqlite3.OperationalError("Database connectivity ping failed.")
+
+            jm = conn.execute("PRAGMA journal_mode;").fetchone()
+            journal_mode = str(jm[0]).lower() if (jm and len(jm) > 0) else ("turso" if self.is_turso else "wal")
+
+            agent_count_row = conn.execute("SELECT COUNT(*) FROM agents;").fetchone()
+            agent_count = int(agent_count_row[0]) if agent_count_row else 0
+
+            return {
+                "db": journal_mode,
+                "agent_count": agent_count,
+            }
+
+    def get_feed_paginated(
+        self,
+        agent_id: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Get posts with bounded keyset cursor pagination on (created_at DESC, id DESC).
+
+        Args:
+            agent_id: Optional agent identifier. If None, queries across all agents.
+            limit: Number of items to return (capped to positive integer).
+            cursor: Opaque pagination cursor from a previous page's nextCursor.
+
+        Returns:
+            tuple[list[dict[str, Any]], str | None]: (posts, next_cursor)
+        """
+        fetch_count = limit + 1
+        cursor_data = decode_cursor(cursor) if cursor else None
+
+        with self._get_connection() as conn:
             if agent_id:
-                rows = conn.execute(
+                if cursor_data:
+                    c_time, c_id = cursor_data
+                    query = """
+                        SELECT id, created_at, text, rationale, sources_json
+                        FROM feed_posts
+                        WHERE agent_id = ? AND (created_at < ? OR (created_at = ? AND id < ?))
+                        ORDER BY created_at DESC, id DESC 
+                        LIMIT ?
                     """
-                    SELECT id, created_at, text, rationale, sources_json 
-                    FROM feed_posts 
-                    WHERE agent_id = ? 
-                    ORDER BY created_at DESC 
-                    LIMIT ?
-                    """,
-                    (agent_id, limit)
-                ).fetchall()
+                    params: tuple[Any, ...] = (agent_id, c_time, c_time, c_id, fetch_count)
+                else:
+                    query = """
+                        SELECT id, created_at, text, rationale, sources_json
+                        FROM feed_posts
+                        WHERE agent_id = ?
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT ?
+                    """
+                    params = (agent_id, fetch_count)
             else:
-                rows = conn.execute(
+                if cursor_data:
+                    c_time, c_id = cursor_data
+                    query = """
+                        SELECT id, created_at, text, rationale, sources_json
+                        FROM feed_posts
+                        WHERE (created_at < ? OR (created_at = ? AND id < ?))
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT ?
                     """
-                    SELECT id, created_at, text, rationale, sources_json 
-                    FROM feed_posts 
-                    ORDER BY created_at DESC 
-                    LIMIT ?
-                    """,
-                    (limit,)
-                ).fetchall()
+                    params = (c_time, c_time, c_id, fetch_count)
+                else:
+                    query = """
+                        SELECT id, created_at, text, rationale, sources_json
+                        FROM feed_posts
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT ?
+                    """
+                    params = (fetch_count,)
+
+            rows = conn.execute(query, params).fetchall()
+
+            has_more = len(rows) > limit
+            page_rows = rows[:limit]
 
             posts = []
-            for r in rows:
+            for r in page_rows:
                 try:
                     raw_sources = json.loads(r["sources_json"])
                     if isinstance(raw_sources, list):
@@ -493,9 +583,31 @@ class AgentMemoryStore:
                     "createdAt": str(created_at_val),
                     "text": str(r["text"]),
                     "rationale": str(r["rationale"]),
-                    "sources": sources
+                    "sources": sources,
                 })
-            return posts
+
+            next_cursor = None
+            if has_more and posts:
+                last_post = posts[-1]
+                next_cursor = encode_cursor(last_post["createdAt"], last_post["id"])
+
+            return posts, next_cursor
+
+    def get_feed(
+        self,
+        agent_id: str | None = None,
+        limit: int = 200,
+        cursor: str | None = None,
+        return_cursor: bool = False,
+    ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], str | None]:
+        """Get posts in reverse chronological order (newest first).
+
+        Maintains 100% backward compatibility with existing callers.
+        """
+        posts, next_cursor = self.get_feed_paginated(agent_id=agent_id, limit=limit, cursor=cursor)
+        if return_cursor:
+            return posts, next_cursor
+        return posts
 
     def count_posts(self, agent_id: str | None = None) -> int:
         """Count total posts published."""
@@ -536,17 +648,20 @@ class AgentMemoryStore:
         reason: str
     ) -> None:
         """Log an explicit editorial decision (ACCEPTED or REJECTED) with reason."""
-        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        with self._get_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO editorial_decisions (agent_id, topic_title, decision, reason, evaluated_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (agent_id, topic_title, decision, reason, now_utc)
-            )
-            conn.commit()
-        logger.info(f"[EDITORIAL] Logged decision for '{topic_title}': {decision} ({reason[:60]}...)")
+        now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            with self._get_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO editorial_decisions (agent_id, topic_title, decision, reason, evaluated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (agent_id, topic_title, decision, reason, now_utc)
+                )
+                conn.commit()
+            logger.info(f"[EDITORIAL] Logged decision for '{topic_title}': {decision} ({reason[:60]}...)")
+        except sqlite3.IntegrityError:
+            pass
 
     def get_recent_editorial_decisions(self, agent_id: str, limit: int = 50) -> list[dict[str, Any]]:
         """Get recent editorial decisions and rejection history."""
@@ -586,7 +701,7 @@ class AgentMemoryStore:
             duration_minutes = settings.publish_window_minutes
 
         window_id = f"win-{uuid.uuid4().hex[:8]}"
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         started_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
         ends_at = (now + timedelta(minutes=duration_minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -613,7 +728,7 @@ class AgentMemoryStore:
 
     def get_active_window(self, agent_id: str) -> dict[str, Any] | None:
         """Get current OPEN window if one exists and has not yet expired."""
-        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         with self._get_connection() as conn:
             row = conn.execute(
                 """
@@ -655,7 +770,7 @@ class AgentMemoryStore:
 
         # If previous window exists but expired without formal closure, return it so it can be evaluated
         latest = self.get_latest_window(agent_id)
-        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         if latest and latest["status"] == "OPEN" and latest["ends_at"] <= now_utc:
             return latest
 
@@ -693,7 +808,7 @@ class AgentMemoryStore:
         post_id: str | None = None
     ) -> None:
         """Close a publishing window with final status."""
-        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         with self._get_connection() as conn:
             conn.execute(
                 """
@@ -734,7 +849,7 @@ class AgentMemoryStore:
     ) -> dict[str, Any]:
         """Persist an evaluated news candidate with multi-factor score and breakdown."""
         if not discovered_at:
-            discovered_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            discovered_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         if not topic_hash:
             topic_hash = self.compute_topic_hash(title)
 
@@ -878,7 +993,7 @@ class AgentMemoryStore:
         window_id: str
     ) -> None:
         """Persist X publication record for restart-durable duplicate prevention."""
-        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         with self._get_connection() as conn:
             conn.execute(
                 """

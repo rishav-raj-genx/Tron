@@ -1,10 +1,9 @@
 """Regression coverage for reachable, live-only discovery fallback paths and secret log sanitization."""
 
-import unittest
 import os
 import tempfile
-import logging
-from datetime import datetime, timedelta, timezone
+import unittest
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 try:
@@ -12,11 +11,10 @@ try:
 except ImportError:
     pass
 
-from services.topic_discovery import TopicDiscoveryService
 from services.autonomous_publisher import AutonomousPublisherService
 from services.memory import AgentMemoryStore
+from services.topic_discovery import TopicDiscoveryService
 from utils.api import sanitize_url_credentials
-
 
 SEARCH_TEXT = "Search results:\nAI security research https://example.org/live-paper"
 ARXIV_CANDIDATE = {
@@ -201,7 +199,7 @@ class TestAutonomousArxivFallback(unittest.IsolatedAsyncioTestCase):
             with memory._get_connection() as conn:
                 conn.execute(
                     "UPDATE publishing_windows SET ends_at = ? WHERE window_id = ?",
-                    ((datetime.now(timezone.utc) - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ"), window["window_id"]),
+                    ((datetime.now(UTC) - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ"), window["window_id"]),
                 )
                 conn.commit()
             closed = await service.run_discovery_and_evaluation_cycle(agent_id)

@@ -100,7 +100,7 @@ def build_persona_profile(name: str, domain: str) -> dict[str, Any]:
                 f"Open source contributions and tooling for {domain_clean}",
                 f"Industry standards, benchmarks, and best practices in {domain_clean}"
             ],
-            "editorial_stance": f"Deeply analytical and grounded in technical truth. Prioritizes verified engineering achievements and reproducible results over hype.",
+            "editorial_stance": "Deeply analytical and grounded in technical truth. Prioritizes verified engineering achievements and reproducible results over hype.",
             "style_guidelines": "Insightful, concise, authoritative, and evidence-driven."
         }
 

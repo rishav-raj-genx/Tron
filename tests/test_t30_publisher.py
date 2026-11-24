@@ -13,10 +13,9 @@ Tests cover:
 import os
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from services.autonomous_publisher import AutonomousPublisherService
-from services.editorial_engine import EditorialEngine
 from services.memory import AgentMemoryStore
 from utils.duplicate import DuplicateStatus
 

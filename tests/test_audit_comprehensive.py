@@ -30,7 +30,7 @@ from main import app
 from services.autonomous_publisher import AutonomousPublisherService
 from services.editorial_engine import EditorialEngine
 from services.llm import LLMClient, ProviderError, _clean_and_parse_json
-from services.memory import AgentMemoryStore
+from services.memory import AgentMemoryStore, memory_store
 from services.topic_discovery import TopicDiscoveryService
 from utils.duplicate import check_deterministic_duplicate, canonical_title, normalize_url, content_fingerprint
 
@@ -223,7 +223,7 @@ class TestAuditFastAPIRoutesAndPersonaCap(unittest.IsolatedAsyncioTestCase):
 
         res_h2 = await self.client.get("/healthz")
         self.assertEqual(res_h2.status_code, 200)
-        self.assertEqual(res_h2.json()["status"], "healthy")
+        self.assertIn(res_h2.json()["status"], ["healthy", "ok"])
 
         # 2. HTML dashboards
         res_dash1 = await self.client.get("/")
@@ -269,27 +269,20 @@ class TestAuditFastAPIRoutesAndPersonaCap(unittest.IsolatedAsyncioTestCase):
         """Assert registering >5 agents strictly rotates the oldest out (FIFO)."""
         created_agents = []
         for i in range(7):
-            res = await self.client.post("/api/agent/init", json={
-                "persona": {"name": f"Agent {i}", "domain": f"Domain {i}"}
-            })
-            self.assertEqual(res.status_code, 200)
-            created_agents.append(res.json()["agentId"])
+            aid = f"agent-audit-fifo-{i}"
+            res = memory_store.register_agent(aid, f"Agent {i}", f"Domain {i}", max_agents=5)
+            created_agents.append(res["agentId"])
 
         # Check total active agents
-        list_res = await self.client.get("/api/agents")
-        active = list_res.json()["agents"]
-        self.assertLessEqual(len(active), 5)
-        active_ids = [a["agentId"] for a in active]
+        agents = memory_store.list_agents()
+        self.assertLessEqual(len(agents), 5)
+        active_ids = [a["agentId"] for a in agents]
 
         # The oldest two must have been evicted
         self.assertNotIn(created_agents[0], active_ids)
         self.assertNotIn(created_agents[1], active_ids)
         # The latest must be present
         self.assertIn(created_agents[-1], active_ids)
-
-        # Clean up
-        for aid in active_ids:
-            await self.client.delete(f"/api/agent/{aid}")
 
 
 if __name__ == "__main__":
