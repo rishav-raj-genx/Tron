@@ -254,6 +254,26 @@ class AgentStatusResponse(BaseModel):
     nextWindow: str | None = None
 
 
+async def ping_render_keep_alive() -> None:
+    """Send a lightweight self-ping to public URL to reset Render's 15-minute inactivity sleep timer."""
+    public_url = (
+        os.getenv("RENDER_EXTERNAL_URL")
+        or getattr(settings, "api_base_url", "")
+    ).strip().rstrip("/")
+    if not public_url or not public_url.startswith("http"):
+        return
+
+    target = f"{public_url}/healthz"
+    try:
+        import httpx
+        timeout = httpx.Timeout(15.0, connect=5.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(target)
+            logger.info(f"[KEEP_ALIVE] Public keep-alive ping to {target} returned HTTP {resp.status_code}")
+    except Exception as exc:
+        logger.debug(f"[KEEP_ALIVE] Public keep-alive ping to {target} failed: {exc}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown with zero-failure guarantee."""
@@ -287,6 +307,21 @@ async def lifespan(app: FastAPI):
             coalesce=True,
             misfire_grace_time=120
         )
+
+        # Schedule keep-alive self-ping loop to prevent Render free-tier sleep
+        if getattr(settings, "keep_alive_enabled", True):
+            keep_alive_minutes = getattr(settings, "keep_alive_interval_minutes", 10)
+            scheduler.add_job(
+                ping_render_keep_alive,
+                "interval",
+                minutes=keep_alive_minutes,
+                id="render_keep_alive_ping",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=60
+            )
+            logger.info(f"[APP] Render keep-alive self-ping registered (every {keep_alive_minutes} min).")
+
         scheduler.start()
         logger.info(
             f"[APP] Background autonomous discovery scheduler started "

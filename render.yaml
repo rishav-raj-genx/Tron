@@ -43,3 +43,7 @@ services:
         value: "*"
       - key: MUTATION_RATE_LIMIT_PER_MINUTE
         value: 30
+      - key: KEEP_ALIVE_ENABLED
+        value: "true"
+      - key: KEEP_ALIVE_INTERVAL_MINUTES
+        value: "10"

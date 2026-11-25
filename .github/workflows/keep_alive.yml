@@ -1,0 +1,28 @@
+name: Render Keep Alive
+
+on:
+  schedule:
+    # Trigger every 12 minutes to guarantee the service stays awake (Render sleeps at 15 min)
+    - cron: '*/12 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    name: Ping Render Public Health Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send keep-alive GET request
+        run: |
+          URL="${{ secrets.RENDER_SERVICE_URL || vars.RENDER_SERVICE_URL }}"
+          if [ -z "$URL" ]; then
+            # Default fallback to known Render project URL if configured or Tron base
+            URL="https://tron-autonoma.onrender.com"
+          fi
+          echo "Pinging healthcheck at: $URL/healthz"
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -m 20 "$URL/healthz" || true)
+          echo "HTTP response status: $RESPONSE"
+          if [ "$RESPONSE" = "200" ]; then
+            echo "Keep-alive ping successful (service is awake)."
+          else
+            echo "Ping returned $RESPONSE (waking up or offline, will retry next cycle)."
+          fi

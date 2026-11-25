@@ -79,7 +79,7 @@ if HAS_PYDANTIC_SETTINGS:
         )
         api_base_url: str = Field(
             default="",
-            validation_alias=AliasChoices("ECHOMIND_API_BASE_URL", "API_BASE_URL", "api_base_url")
+            validation_alias=AliasChoices("RENDER_EXTERNAL_URL", "ECHOMIND_API_BASE_URL", "API_BASE_URL", "api_base_url")
         )
         max_agents: int = Field(
             default=5,
@@ -132,6 +132,14 @@ if HAS_PYDANTIC_SETTINGS:
         mutation_rate_limit: int = Field(
             default=30,
             validation_alias=AliasChoices("MUTATION_RATE_LIMIT_PER_MINUTE", "mutation_rate_limit")
+        )
+        keep_alive_enabled: bool = Field(
+            default=True,
+            validation_alias=AliasChoices("KEEP_ALIVE_ENABLED", "keep_alive_enabled")
+        )
+        keep_alive_interval_minutes: int = Field(
+            default=10,
+            validation_alias=AliasChoices("KEEP_ALIVE_INTERVAL_MINUTES", "keep_alive_interval_minutes")
         )
         discovery_interval_minutes: int = Field(
             default=45,
@@ -220,9 +228,10 @@ else:
 
         def __init__(self) -> None:
             self.port = int(os.getenv("PORT", "8080"))
-            self.api_base_url = os.getenv(
-                "ECHOMIND_API_BASE_URL",
-                os.getenv("API_BASE_URL", "")
+            self.api_base_url = (
+                os.getenv("RENDER_EXTERNAL_URL")
+                or os.getenv("ECHOMIND_API_BASE_URL")
+                or os.getenv("API_BASE_URL", "")
             ).rstrip("/")
             self.max_agents = _safe_int(os.getenv("MAX_AGENTS"), 5)
             self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
@@ -237,6 +246,8 @@ else:
             self.turso_auth_token = os.getenv("TURSO_AUTH_TOKEN", "")
             self.enable_docs = os.getenv("ENABLE_DOCS", "true").lower() in ("true", "1", "yes")
             self.mutation_rate_limit = _safe_int(os.getenv("MUTATION_RATE_LIMIT_PER_MINUTE"), 30)
+            self.keep_alive_enabled = os.getenv("KEEP_ALIVE_ENABLED", "true").lower() in ("true", "1", "yes")
+            self.keep_alive_interval_minutes = _safe_int(os.getenv("KEEP_ALIVE_INTERVAL_MINUTES"), 10)
             self.discovery_interval_minutes = _safe_int(os.getenv("DISCOVERY_INTERVAL_MINUTES", os.getenv("AGENT_INTERVAL_MINUTES")), 45)
             self.discovery_jitter_seconds = _safe_int(os.getenv("DISCOVERY_JITTER_SECONDS"), 300)
             self.publish_window_minutes = _safe_int(os.getenv("PUBLISH_WINDOW_MINUTES"), 45)
