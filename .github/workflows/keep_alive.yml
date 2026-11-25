@@ -15,8 +15,8 @@ jobs:
         run: |
           URL="${{ secrets.RENDER_SERVICE_URL || vars.RENDER_SERVICE_URL }}"
           if [ -z "$URL" ]; then
-            # Default fallback to known Render project URL if configured or Tron base
-            URL="https://tron-autonoma.onrender.com"
+            # Default fallback to verified Render project URL
+            URL="https://tron-lt3m.onrender.com"
           fi
           echo "Pinging healthcheck at: $URL/healthz"
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -m 20 "$URL/healthz" || true)
